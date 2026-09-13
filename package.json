@@ -28,7 +28,7 @@
     "test": "vitest run",
     "prepublishOnly": "pnpm check && pnpm test && pnpm build",
     "e2e": "vitest run test/session.test.ts",
-    "e2e:live": "ANYPLEX_LIVE=${ANYPLEX_LIVE:-anthropic,openai,google} vitest run test/live.test.ts"
+    "e2e:live": "ANYPLEX_LIVE=${ANYPLEX_LIVE:-anthropic,openai,google} vitest run test/live.test.ts test/live-scenarios.test.ts"
   },
   "keywords": [
     "agents",

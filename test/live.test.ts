@@ -1,6 +1,6 @@
 // Opt-in smoke against the real vendors (costs money). ANYPLEX_LIVE=anthropic,openai,google
 // with ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY in the environment or a root .env.
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { anyplex, type ProviderName, type SessionEvent } from "../src/index.ts";
 
@@ -38,7 +38,14 @@ describe.skipIf(live.length === 0)("live", () => {
         budgetUsd: 0.5,
       });
       const events: SessionEvent[] = [];
-      for await (const event of session.events()) events.push(event);
+      for await (const event of session.events()) {
+        events.push(event);
+        if (process.env.ANYPLEX_DEBUG)
+          appendFileSync(
+            process.env.ANYPLEX_DEBUG,
+            `${provider} ${event.type} ${JSON.stringify(event.payload).slice(0, 160)}\n`,
+          );
+      }
       const last = events.at(-1);
       expect(last?.type).toBe("session.ended");
       expect(session.outcome).toEqual({ kind: "completed" });

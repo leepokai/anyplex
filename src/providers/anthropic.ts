@@ -204,19 +204,37 @@ export const anthropic: Provider = {
 
   translate: translateAnthropic,
 
+  /**
+   * The session object's usage stays at zero while a turn runs and is filled in the same instant
+   * the turn ends (observed live 2026-09-13), so a poll at idle can race it. The `session.usage`
+   * event in the history is the settled figure for the turn; it is preferred whenever present.
+   */
   async pollSpend(ctx, ref, signal) {
-    const session = await client(ctx).beta.sessions.retrieve(ref.sessionId, {}, { signal });
+    const c = client(ctx);
+    let settled: number | null = null;
+    for await (const event of c.beta.sessions.events.list(
+      ref.sessionId,
+      { types: ["session.usage"], order: "asc" },
+      { signal },
+    )) {
+      const usage = record((event as unknown as Record<string, unknown>).usage);
+      const totalUsd = parseListCostUsd(usage?.list_cost);
+      if (totalUsd !== null) settled = totalUsd;
+    }
+    if (settled !== null) return { kind: "list_cost_usd", totalUsd: settled };
+    const session = await c.beta.sessions.retrieve(ref.sessionId, {}, { signal });
     const totalUsd = parseListCostUsd(session.usage?.list_cost);
-    return totalUsd === null ? null : { kind: "list_cost_usd", totalUsd };
+    return totalUsd === null || totalUsd === 0 ? null : { kind: "list_cost_usd", totalUsd };
   },
 
   async stop(ctx, ref, reason) {
     const c = client(ctx);
+    // Interrupt for any stop the caller asked for; delete only on an explicit stop(). A finished,
+    // interrupted, or budget-paused session costs nothing while idle and stays attachable.
     if (reason === "kill" || reason === "budget_exceeded")
       await c.beta.sessions.events
         .send(ref.sessionId, { events: [{ type: "user.interrupt" }] })
         .catch(ignore);
-    // Hygiene: a deleted session cannot accrue runtime or be resumed by mistake.
-    await c.beta.sessions.delete(ref.sessionId).catch(ignore);
+    if (reason === "kill") await c.beta.sessions.delete(ref.sessionId).catch(ignore);
   },
 };

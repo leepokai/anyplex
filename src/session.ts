@@ -218,27 +218,47 @@ function createSession(
         }
       }
     } catch (err) {
-      if (!stopRequested && !abort.signal.aborted) {
-        await stopUpstream("failed");
-        throw err;
-      }
+      // Upstream errors end the session instead of throwing: every session ends with
+      // `session.ended`, and the error text travels in the outcome.
+      if (!stopRequested && !abort.signal.aborted)
+        result = { kind: "failed", error: err instanceof Error ? err.message : String(err) };
     }
-    if (stopRequested || abort.signal.aborted) result = { kind: "stopped" };
+    if (stopRequested) result = { kind: "stopped" };
+    else if (abort.signal.aborted) result = { kind: "detached" };
     if (result === null)
       result = { kind: "failed", error: "upstream stream ended before the session settled" };
 
-    // Providers report usage asynchronously (OpenAI: seconds after the turn ends); wait briefly
-    // so the session ends with its real cost. ponytail: fixed 15 x 2 s, make adaptive if needed.
+    // Providers report usage asynchronously (OpenAI: seconds to a minute after the turn ends).
+    // Poll with backoff for up to ~60 s so the session ends with its real cost; if it never
+    // arrives, say so in the stream instead of silently ending at $0.
     if ((result.kind === "completed" || result.kind === "budget_exceeded") && provider.pollSpend) {
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        const reported = await provider.pollSpend(ctx, ref, abort.signal).catch(() => null);
-        if (reported) {
-          const update = apply(reported);
-          if (update) yield update;
-          break;
+      let settled = false;
+      let lastError: string | null = null;
+      const delays = [1000, 2000, 4000, 8000, 15000, 30000];
+      for (const delay of delays) {
+        try {
+          const reported = await provider.pollSpend(ctx, ref, abort.signal);
+          if (reported) {
+            const update = apply(reported);
+            if (update) yield update;
+            settled = true;
+            break;
+          }
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
         }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
+      if (!settled)
+        yield {
+          type: "harness.event",
+          payload: {
+            type: "spend.unsettled",
+            message: "the provider had not reported usage yet; attach() later to settle spend",
+            error: lastError,
+          },
+          upstreamId: null,
+        };
       if (result.kind === "completed" && capReached()) result = { kind: "budget_exceeded" };
     }
     switch (result.kind) {
@@ -253,6 +273,7 @@ function createSession(
         await stopUpstream("failed");
         break;
       case "stopped":
+      case "detached":
       case "terminated":
         break;
     }

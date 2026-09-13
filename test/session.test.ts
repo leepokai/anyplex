@@ -15,7 +15,10 @@ interface Vendor {
   /** Spend of one scripted turn: list price (Anthropic) or the rate table / fallback (OpenAI, Gemini). */
   turnUsd: number;
   lowBudgetUsd: number;
+  /** stop(): interrupted and deleted upstream. */
   stopped: (state: unknown, sessionId: string) => boolean;
+  /** Budget: interrupted upstream, transcript kept. */
+  interrupted: (state: unknown, sessionId: string) => boolean;
 }
 
 const VENDORS: Vendor[] = [
@@ -30,6 +33,9 @@ const VENDORS: Vendor[] = [
       const s = (state as Awaited<ReturnType<typeof startFakeAnthropic>>["state"]).sessions.get(id);
       return s?.interrupted === true && s.deleted;
     },
+    interrupted: (state, id) =>
+      (state as Awaited<ReturnType<typeof startFakeAnthropic>>["state"]).sessions.get(id)
+        ?.interrupted === true,
   },
   {
     provider: "openai",
@@ -42,6 +48,9 @@ const VENDORS: Vendor[] = [
       const s = (state as Awaited<ReturnType<typeof startFakeOpenAI>>["state"]).sessions.get(id);
       return s?.cancelled === true && s.deleted;
     },
+    interrupted: (state, id) =>
+      (state as Awaited<ReturnType<typeof startFakeOpenAI>>["state"]).sessions.get(id)
+        ?.cancelled === true,
   },
   {
     provider: "google",
@@ -51,6 +60,9 @@ const VENDORS: Vendor[] = [
     turnUsd: 0.06,
     lowBudgetUsd: 0.02,
     stopped: (state, id) =>
+      (state as Awaited<ReturnType<typeof startFakeGoogle>>["state"]).interactions.get(id)
+        ?.cancelled === true,
+    interrupted: (state, id) =>
       (state as Awaited<ReturnType<typeof startFakeGoogle>>["state"]).interactions.get(id)
         ?.cancelled === true,
   },
@@ -107,8 +119,8 @@ for (const vendor of VENDORS) {
       expect(t.filter((x) => x === "tool.call")).toHaveLength(1);
       expect(t.filter((x) => x === "tool.result")).toHaveLength(1);
       expect(t).toContain("spend.updated");
-      if (vendor.provider !== "google")
-        expect(vendor.stopped(fake.state, session.ref.sessionId) || true).toBe(true);
+      // A finished session is left in place (attachable), never deleted.
+      expect(vendor.stopped(fake.state, session.ref.sessionId)).toBe(false);
     });
 
     it("stops the upstream session when spend reaches the budget", async () => {
@@ -118,7 +130,7 @@ for (const vendor of VENDORS) {
       expect(ended(events).outcome).toEqual({ kind: "budget_exceeded" });
       expect(session.spentUsd).toBeGreaterThanOrEqual(vendor.lowBudgetUsd);
       expect(session.spentUsd).toBeLessThanOrEqual(vendor.turnUsd);
-      await until(() => vendor.stopped(fake.state, session.ref.sessionId));
+      await until(() => vendor.interrupted(fake.state, session.ref.sessionId));
     });
 
     it("stop() interrupts the hosted session", async () => {

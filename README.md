@@ -18,10 +18,11 @@ raw SDKs do not:
   `session.usage`); OpenAI reports usage seconds after the turn ends (waited for); Gemini
   reports cumulative totals (diffed). Unpriced models are estimated at a deliberately expensive
   fallback rate and flagged `uncertain`.
-- **A budget watchdog.** Pass `budgetUsd`; the session is stopped upstream as soon as settled
-  spend reaches it. Anthropic additionally gets a native session budget. Enforcement is between
-  turns, so one long turn can overshoot.
-- **stop()** that reaches the hosted session: interrupt and delete, cancel and delete, or cancel.
+- **A budget watchdog.** Pass `budgetUsd`; the session is interrupted upstream as soon as
+  settled spend reaches it. Anthropic additionally gets a native session budget. Enforcement is
+  between turns, so one long turn can overshoot.
+- **stop()** that reaches the hosted session: interrupt and delete (Anthropic), cancel and delete
+  (OpenAI), or cancel (Gemini). A `signal` only detaches; the session keeps running.
 - **Lossless re-attach.** Persist `session.ref` and `session.state()`; `attach()` replays history
   and skips what you already saw, so a process restart duplicates neither spend nor finished
   upstream items. Works even where the provider has no replay (OpenAI) or no event ids (Gemini).
@@ -84,13 +85,15 @@ for await (const event of resumed.events()) { /* only what A never saw */ }
 ```
 
 Swap the provider by changing two strings. The agent object is created once per definition and
-cached in `store` (in-memory by default; implement `AgentStore` to persist it).
+cached in `store`: `MemoryStore` by default, `FileStore("path.json")` for anything that restarts,
+or your own `AgentStore`.
 
 ## Outcomes
 
 `session.ended` carries one of `completed`, `budget_exceeded`, `requires_action` (the hosted
 session wants a client tool result that anyplex does not provide), `terminated` (the provider
-ended it), `stopped`, or `failed`.
+ended it), `stopped` (you called `stop()`), `detached` (your `signal` aborted; the session is
+still running upstream), or `failed`.
 
 ## What it does not do
 
@@ -112,6 +115,70 @@ retry beyond the vendor SDK defaults, or run a loop of its own. The agent loop, 
 the model, and the bill all belong to the provider; anyplex only speaks their three dialects
 through one interface. All three APIs are beta or preview and may change under it.
 
+## Things that will bite you
+
+Every item below was hit while testing against the real vendors on 2026-09-13. Read this
+before you rely on a number or a lifecycle.
+
+**Spend**
+
+- Spend is the provider's figure, not your invoice. Anthropic reports public list price; OpenAI
+  and Gemini report tokens that anyplex prices with a small local rate table. A model missing
+  from the table (`gpt-6-astra`, every Gemini model) is priced at a deliberately expensive
+  fallback and the session is marked `uncertain`; treat those numbers as an upper bound.
+- Anthropic rounds list cost to whole cents. A short warm-cache Haiku session reports $0.00,
+  and the session object shows $0 until the turn ends. A budget below $0.01 cannot trigger,
+  and a $0.01 budget only triggers once a turn actually costs a cent.
+- OpenAI reports usage asynchronously, anywhere from seconds to more than a minute after the
+  turn ends. anyplex waits about a minute with backoff. If usage still has not arrived, the
+  session ends with `spent_usd: 0` and a `harness.event` of type `spend.unsettled`; call
+  `attach()` on the same ref later and the spend settles. Do not treat `session.ended` as the
+  final bill for OpenAI unless no `spend.unsettled` event was seen.
+- The budget watchdog only sees spend when the provider reports it, so it acts between turns
+  or after the turn, never inside one. For OpenAI it usually fires after the session already
+  finished. If you need a hard ceiling inside a turn, put it on the provider side (Anthropic
+  session budget, which anyplex sets from `budgetUsd`) or accept the overshoot.
+
+**Sessions and agents**
+
+- A finished session is left in place. Only `stop()` deletes it (Anthropic, OpenAI) or cancels it
+  (Gemini). Budget stops interrupt but do not delete, so the transcript stays attachable.
+- `attach()` to a session you already stopped ends with `failed` (Anthropic and OpenAI answer
+  404) or `terminated` (Gemini); it never hangs.
+- With the default `MemoryStore`, every new process creates a fresh provider-side agent:
+  Anthropic makes an agent plus an environment, OpenAI an agent, Gemini reuses by id. Pass
+  `FileStore` or your own `AgentStore` in anything that restarts.
+- One `start()` is one prompt. There is no second turn on the same session yet.
+- `events()` never throws for upstream failures; it ends with `session.ended` carrying
+  `{ kind: "failed", error }`. Wrong keys and unknown models are rejected by `start()` itself
+  within a second or two.
+
+**OpenAI specifics**
+
+- The Agents API accepted only `gpt-6-astra`, `gpt-5.2-codex`, and `gpt-5.2` on 2026-09-13,
+  and only `gpt-6-astra` completed a turn; the other two failed upstream with `internal_error`
+  before producing anything. Any other model is refused at `start()`.
+- The hosted environment boots in about fifteen seconds and bills container time with a
+  five-minute minimum, so a tiny task still costs a few cents of compute.
+- Deleting a session whose turn is still cancelling is refused; `stop()` waits for the session
+  to leave `in_progress` before deleting, which takes a few seconds.
+
+**Gemini specifics**
+
+- Every reconnect replays the whole interaction from the first event and `last_event_id` is
+  ignored, so `attach()` on a long interaction re-reads it in full; dedupe keeps your consumer
+  clean but the bytes still flow.
+- A cancelled interaction replays without a terminal event; anyplex asks for the final status
+  once more and ends with `terminated`.
+- Hosted-agent pricing is unpublished; all Gemini spend is an estimate.
+
+**Anthropic specifics**
+
+- `session.usage` is the settled figure for a turn; anyplex reads it from the event history
+  because the SDK's stream parser may drop it. Polling the session object mid-turn returns zeros.
+- Sessions require Managed Agents beta access on the key; without it every call fails at
+  `start()`.
+
 ## What has been verified, and how far
 
 Everything below was checked on 2026-09-13. "Live" means against the real vendor with a real
@@ -122,18 +189,20 @@ live traffic that day.
 |---|---|---|---|
 | Create agent, start session, stream to completion | live (`claude-haiku-4-5`) | live (`gpt-6-astra`) | live (`gemini-3.8-flash`) |
 | Tool call and result in the unified transcript | live | live (`command_execution`) | live (`code_execution_call` / `_result` via deltas) |
-| Spend settles with the provider's figure | live (list cost, rounded to whole cents) | live (usage arrives late, waited for) | live (cumulative totals, priced at the fallback rate) |
-| History replay on attach | fake only (stream + list overlap) | fake only (items and turns backfill) | live: replay from the first event observed; dedupe fake only |
-| Budget watchdog stops the session | fake only | fake only | fake only |
+| Spend settles with the provider's figure | live (list cost, whole cents) | live (late usage, waited for; `spend.unsettled` when it never comes) | live (cumulative totals at the fallback rate) |
+| `attach()` mid-run, after completion with state, after completion without state | live | live | live |
+| Budget watchdog interrupts the session | live ($0.01 cap on a one-cent task) | live (fires after the turn, once usage lands) | live (fires mid-interaction) |
 | Native provider budget (`budget_reached`) | fake only | n/a | n/a |
-| `stop()` reaches the hosted session | fake only | fake only | fake only |
-| `requires_action`, `terminated`, `failed` paths | fake / unit only | fake / unit only (`internal_error` seen live on other models) | fake / unit only |
+| `stop()` reaches the hosted session | live (interrupt + delete, ~1 s) | live (cancel + delete, ~4 s) | live (cancel, ~3 s) |
+| `attach()` to a stopped session ends cleanly | live (`failed`, 404) | live (`terminated`) | live (`terminated`) |
+| `signal` abort detaches and the session keeps running | live | live | live |
+| Wrong key and unknown model rejected at `start()` | live | live | live |
+| Two concurrent sessions on one cached agent | live | not run (cost) | live |
+| `requires_action` and provider-side `failed` paths | unit only | unit only (`internal_error` seen live on other models) | unit only |
 | Self-hosted environments, MCP and function tools, subagents, multi-turn | not covered | not covered | not covered |
 
-Known gaps you should expect to hit first: OpenAI models other than `gpt-6-astra` failed
-upstream that day; Gemini hosted-agent pricing is unpublished, so its spend is an estimate;
-the watchdog can only act between turns; nothing here has been run for longer than a few
-minutes or under load.
+Nothing here has been run for longer than a few minutes or under load. The live suite is
+`pnpm e2e:live`; `test/live-scenarios.test.ts` is the list above as code.
 
 ## Provider notes
 

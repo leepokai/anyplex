@@ -19,6 +19,7 @@ export {
 } from "./session.ts";
 export {
   type AgentStore,
+  FileStore,
   MemoryStore,
   type Outcome,
   PROVIDERS,

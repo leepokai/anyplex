@@ -297,10 +297,19 @@ export const openai: Provider = {
 
   async stop(ctx, ref, reason) {
     const c = client(ctx);
+    // Cancel the running turn for any caller-requested stop; delete only on an explicit stop().
+    // An idle session keeps its transcript attachable; the hosted container times out on its own.
     if (reason === "kill" || reason === "budget_exceeded")
       await c.beta.agents.sessions.events
         .create(ref.sessionId, { events: [{ type: "agent.session.input.cancel" }] })
         .catch(ignore);
+    if (reason !== "kill") return;
+    // Deleting while the cancelled turn is still winding down is refused; give it a moment.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const session = await c.beta.agents.sessions.retrieve(ref.sessionId).catch(() => null);
+      if (session?.status !== "in_progress") break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
     await c.beta.agents.sessions.delete(ref.sessionId).catch(ignore);
   },
 };

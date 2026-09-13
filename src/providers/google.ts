@@ -244,10 +244,18 @@ export const google: Provider = {
     signal.addEventListener("abort", cancel, { once: true });
     const starts = new Map<number, Record<string, unknown>>();
     let ordinal = 0;
+    let terminal = false;
     try {
       for await (const raw of stream) {
         const event = raw as unknown as Record<string, unknown>;
         ordinal += 1;
+        if (
+          event.event_type === "interaction.completed" ||
+          event.event_type === "error" ||
+          (event.event_type === "interaction.status_update" &&
+            statusOutcome(str(event.status) ?? "").kind !== "continue")
+        )
+          terminal = true;
         const index = typeof event.index === "number" ? event.index : null;
         const step = record(event.step);
         if (event.event_type === "step.start" && index !== null && step) starts.set(index, step);
@@ -259,6 +267,16 @@ export const google: Provider = {
               ? event.event_id
               : `${ref.sessionId}:${ordinal}`,
           ...(known ? { step: known } : {}),
+        };
+      }
+      // A cancelled interaction replays without a terminal event (observed live); ask once.
+      if (!terminal && !signal.aborted) {
+        const final = await client(ctx).interactions.get(ref.sessionId);
+        yield {
+          event_type: "interaction.status_update",
+          event_id: `${ref.sessionId}:final`,
+          interaction_id: ref.sessionId,
+          status: final.status ?? "failed",
         };
       }
     } finally {

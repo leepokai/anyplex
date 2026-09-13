@@ -19,8 +19,10 @@ export type Outcome =
   | { kind: "requires_action" }
   /** The upstream session ended without a result (cancelled, deleted, or terminated). */
   | { kind: "terminated" }
-  /** stop() was called. */
+  /** stop() was called; the upstream session was interrupted and cleaned up. */
   | { kind: "stopped" }
+  /** The start/attach `signal` aborted: this process let go, the upstream session keeps running. Re-attach later. */
+  | { kind: "detached" }
   | { kind: "failed"; error: string };
 
 /**
@@ -94,6 +96,34 @@ export class MemoryStore implements AgentStore {
   }
   async set(key: string, ref: { agentId: string; environmentId: string | null }) {
     this.refs.set(key, ref);
+  }
+}
+
+/**
+ * JSON file store, so a process restart reuses the provider-side agents instead of creating
+ * new ones (Anthropic creates an agent and an environment per definition; OpenAI an agent).
+ * ponytail: whole-file rewrite on every set; fine for a handful of definitions.
+ */
+export class FileStore implements AgentStore {
+  constructor(private readonly path: string) {}
+  private async read(): Promise<Record<string, { agentId: string; environmentId: string | null }>> {
+    const { readFile } = await import("node:fs/promises");
+    try {
+      return JSON.parse(await readFile(this.path, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+  async get(key: string) {
+    return (await this.read())[key] ?? null;
+  }
+  async set(key: string, ref: { agentId: string; environmentId: string | null }) {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    const all = await this.read();
+    all[key] = ref;
+    await mkdir(dirname(this.path), { recursive: true });
+    await writeFile(this.path, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
   }
 }
 
