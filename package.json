@@ -1,7 +1,7 @@
 {
   "name": "anyplex",
   "version": "0.3.0",
-  "description": "One session interface for hosted agent runtimes: Anthropic Managed Agents, OpenAI Agents API, Gemini Managed Agents, Cursor Cloud Agents. Unified events, provider-reported spend, budget watchdog, stop, and lossless re-attach.",
+  "description": "LiteLLM for managed agents. One session interface for hosted agent runtimes: Anthropic Managed Agents, OpenAI Agents API, Gemini Managed Agents, Cursor Cloud Agents. Unified events, provider-reported spend, budget watchdog, stop, and lossless re-attach.",
   "license": "MIT",
   "author": "leepokai",
   "repository": {

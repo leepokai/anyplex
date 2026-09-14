@@ -25,6 +25,7 @@ import {
   MemoryStore,
   type Outcome,
   type PermissionPolicy,
+  PROVIDERS,
   type ProviderName,
   type ProviderOptions,
   type RawEvent,
@@ -41,11 +42,15 @@ import {
 const BUILTIN: Record<ProviderName, Provider> = { anthropic, openai, google, cursor };
 
 export interface AnyplexOptions {
-  /** A built-in provider name, or your own `Provider` implementation. */
-  provider: ProviderName | Provider;
+  /**
+   * A built-in provider name, or your own `Provider` implementation. Optional when `model` is a
+   * `"provider/model"` route such as `"cursor/claude-haiku-4-5"`.
+   */
+  provider?: ProviderName | Provider;
   apiKey: string;
   /** Override the provider's base URL (fakes, proxies). OpenAI expects the `/v1` suffix. */
   baseUrl?: string;
+  /** The provider's model id, or a `"provider/model"` route when `provider` is omitted. */
   model: string;
   instructions: string;
   /** Tools the application executes; the agent asks through `tool.request`. */
@@ -123,6 +128,19 @@ export function capabilities(provider: ProviderName | Provider): Capabilities {
   return resolveProvider(provider).capabilities;
 }
 
+/**
+ * Split a `"provider/model"` route (`"cursor/claude-haiku-4-5"`, `"openai/gpt-6-astra"`) into
+ * its parts. A model without a known provider prefix is returned as is with `provider: null`,
+ * so vendor ids that contain slashes are not mangled.
+ */
+export function parseModel(route: string): { provider: ProviderName | null; model: string } {
+  const slash = route.indexOf("/");
+  const prefix = slash > 0 ? route.slice(0, slash) : null;
+  if (prefix && (PROVIDERS as readonly string[]).includes(prefix))
+    return { provider: prefix as ProviderName, model: route.slice(slash + 1) };
+  return { provider: null, model: route };
+}
+
 function resolveProvider(provider: ProviderName | Provider): Provider {
   if (typeof provider !== "string") return provider;
   const found = BUILTIN[provider];
@@ -154,9 +172,20 @@ function checkSupport(provider: Provider, definition: AgentDefinition): void {
 }
 
 export function anyplex(options: AnyplexOptions): Anyplex {
-  const provider = resolveProvider(options.provider);
+  const route = parseModel(options.model);
+  const providerName = options.provider ?? route.provider;
+  if (!providerName)
+    throw new Error(
+      `no provider: pass \`provider\` or a "provider/model" route (got model ${JSON.stringify(options.model)})`,
+    );
+  const provider = resolveProvider(providerName);
+  // The route prefix is only stripped when it names the provider in use.
+  const model =
+    typeof providerName === "string" && route.provider === providerName
+      ? route.model
+      : options.model;
   const definition: AgentDefinition = {
-    model: options.model,
+    model,
     instructions: options.instructions,
     tools: options.tools ?? [],
     mcpServers: options.mcpServers ?? [],
@@ -309,12 +338,15 @@ function createSession(
   };
   const apply = (spend: Spend): SessionEvent | null => {
     const { costUsd, estimated, usage } = spendDelta(spend);
-    if (costUsd <= 0) return null;
-    spentUsd = Math.round((spentUsd + costUsd) * 1e6) / 1e6;
+    // Spend is kept to a millionth of a dollar; a provider figure with more digits (Cursor
+    // reports fractional cents) must not produce a phantom delta on the next poll.
+    const delta = Math.round(costUsd * 1e6) / 1e6;
+    if (delta <= 0) return null;
+    spentUsd = Math.round((spentUsd + delta) * 1e6) / 1e6;
     uncertain = uncertain || estimated;
     return {
       type: "spend.updated",
-      payload: { spent_usd: spentUsd, delta_usd: costUsd, uncertain, ...(usage ? { usage } : {}) },
+      payload: { spent_usd: spentUsd, delta_usd: delta, uncertain, ...(usage ? { usage } : {}) },
       upstreamId: null,
     };
   };

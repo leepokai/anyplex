@@ -20,7 +20,7 @@ const MODELS: Record<ProviderName, { key: string; model: string }> = {
   openai: { key: "OPENAI_API_KEY", model: process.env.ANYPLEX_OPENAI_MODEL ?? "gpt-6-astra" },
   google: { key: "GEMINI_API_KEY", model: process.env.ANYPLEX_GOOGLE_MODEL ?? "gemini-3.8-flash" },
   // Cloud Agents need a Pro plan; a free account answers 403 plan_required on every endpoint.
-  cursor: { key: "CURSOR_API_KEY", model: process.env.ANYPLEX_CURSOR_MODEL ?? "composer-2" },
+  cursor: { key: "CURSOR_API_KEY", model: process.env.ANYPLEX_CURSOR_MODEL ?? "claude-haiku-4-5" },
 };
 
 describe.skipIf(live.length === 0)("live", () => {

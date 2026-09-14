@@ -7,8 +7,14 @@
   prepended to the first prompt (no system-prompt field); client tools, input files, network,
   packages, setup commands, permissions are refused as unsupported; MCP servers and GitHub
   repositories map natively. `anyplex/fakes` gains `startFakeCursor()` (expired streams, late
-  usage, failing runs, `plan_required`-style errors). Live verification is blocked on a Pro
-  plan; the fake follows the published OpenAPI spec.
+  usage, failing runs, idempotent `agentId`, charged cost). Verified live with
+  `claude-haiku-4-5` on a Pro plan; the create call blocks about 60 s and may be reset, so the
+  agent id is client-chosen and the call converges on it; spend is the usage endpoint's
+  `cost.chargedCents`.
+- `model: "provider/model"` routes (`"cursor/claude-haiku-4-5"`) make `provider` optional;
+  `parseModel()` is exported. The README tagline is now "LiteLLM for managed agents".
+- Spend deltas are rounded to a millionth of a dollar before they are applied, so a provider
+  figure with more digits no longer produces a phantom follow-up update.
 - `AnyplexError`: every rejection from a session method now carries the vendor's `status`,
   `code`, a `retryable` hint, and the original error as `cause`. `UnsupportedError` extends it.
   A `failed` outcome carries `code` and `status` when known. Callers that matched on vendor

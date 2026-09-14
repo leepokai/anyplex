@@ -13,6 +13,7 @@ import {
   computeCost,
   type Provider,
   type ProviderName,
+  parseModel,
   type SessionEvent,
   UnsupportedError,
 } from "../src/index.ts";
@@ -79,10 +80,10 @@ const VENDORS: Vendor[] = [
   },
   {
     provider: "cursor",
-    model: "composer-2",
+    model: "composer-2.5",
     start: (opts) => startFakeCursor({ eventDelayMs: 15, ...opts }),
     base: (url) => url,
-    // No published rate for composer-2: the fallback rate prices 1000 in + 200 out at $0.03.
+    // The fake reports the charged cost (3 cents per run) like the live usage endpoint.
     turnUsd: 0.03,
     lowBudgetUsd: 0.02,
     stopped: (state, id) => {
@@ -213,6 +214,18 @@ for (const vendor of VENDORS) {
       expect(new Set(calls).size).toBe(2);
       expect(session.spentUsd).toBeCloseTo(vendor.turnUsd * 2, 6);
       if (vendor.provider === "google") expect(session.ref.sessionId).not.toBe(firstId);
+      // Attaching without state replays both turns: the earlier one as transcript only.
+      const replay = await collect(client.attach(session.ref, { budgetUsd: 5 }).events());
+      expect(ended(replay).outcome).toEqual({ kind: "completed" });
+      const text = replay
+        .filter((e) => e.type === "message.delta")
+        .map((e) => (e.payload as { text: string }).text)
+        .join("|");
+      if (vendor.provider === "cursor") {
+        expect(text).toContain("Run 1 finished.");
+        expect(text).toContain("run 2 done");
+        expect(replay.filter((e) => e.type === "tool.call")).toHaveLength(1);
+      }
     });
 
     it.skipIf(capabilities(vendor.provider).clientTools === "unsupported")(
@@ -475,6 +488,41 @@ describe("errors and spend detail", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     });
+  });
+});
+
+describe("routes", () => {
+  it("accepts a provider/model route instead of a provider", async () => {
+    expect(parseModel("cursor/claude-haiku-4-5")).toEqual({
+      provider: "cursor",
+      model: "claude-haiku-4-5",
+    });
+    expect(parseModel("google/gemini-3.8-flash")).toEqual({
+      provider: "google",
+      model: "gemini-3.8-flash",
+    });
+    expect(parseModel("accounts/fireworks/x")).toEqual({
+      provider: null,
+      model: "accounts/fireworks/x",
+    });
+    const fake = await startFakeCursor({ eventDelayMs: 5 });
+    servers.push(fake);
+    const client = anyplex({
+      apiKey: "k",
+      baseUrl: fake.url,
+      model: "cursor/composer-2.5",
+      instructions: "x",
+    });
+    expect(client.capabilities).toBe(capabilities("cursor"));
+    const session = await client.start({ prompt: "go", budgetUsd: 1 });
+    expect(ended(await collect(session.events())).outcome).toEqual({ kind: "completed" });
+    expect(session.ref.provider).toBe("cursor");
+    expect(JSON.stringify(fake.state.agents.get(session.ref.sessionId)?.request)).toContain(
+      '"id":"composer-2.5"',
+    );
+    expect(() => anyplex({ apiKey: "k", model: "composer-2.5", instructions: "x" })).toThrow(
+      /no provider/,
+    );
   });
 });
 

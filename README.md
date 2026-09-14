@@ -1,13 +1,15 @@
+<img src="assets/icon.svg" width="96" alt="anyplex: four strands converging into one hub and leaving as one line">
+
 # anyplex
 
-One session interface for hosted agent runtimes.
+LiteLLM for managed agents: one session interface for hosted agent runtimes.
 
 | Provider | API | Status on 2026-09-14 |
 |---|---|---|
 | `anthropic` | Claude Managed Agents (`managed-agents-2026-04-01`) | beta, verified live |
 | `openai` | OpenAI Agents API (`client.beta.agents`) | public beta since 2026-09-10, verified live with `gpt-6-astra` |
 | `google` | Gemini Managed Agents (Interactions API, `antigravity-preview-05-2026`) | preview, verified live with `gemini-3.8-flash` |
-| `cursor` | Cursor Cloud Agents API v1 (`api.cursor.com`) | public beta, verified against the published spec only; live blocked on a Pro plan (see below) |
+| `cursor` | Cursor Cloud Agents API v1 (`api.cursor.com`) | public beta, verified live with `claude-haiku-4-5` (Pro plan required) |
 
 The four runtimes converged on the same shape: a persisted agent, a hosted session with its own
 sandbox, and an event stream. anyplex drives all of them through one loop and gives an
@@ -26,8 +28,9 @@ application every layer it needs, in one vocabulary:
 - **Spend that is actually right.** Anthropic prices the session (read from the settled
   `session.usage` history); OpenAI reports usage seconds to a minute after the turn (waited
   for, with backoff); Gemini reports cumulative totals per interaction (diffed, reset per
-  chained interaction). Unpriced models use a deliberately expensive fallback rate and are
-  flagged `uncertain`; pass `rates` to price them yourself.
+  chained interaction); Cursor reports the charged cost in cents on its usage endpoint.
+  Unpriced models use a deliberately expensive fallback rate and are flagged `uncertain`;
+  pass `rates` to price them yourself.
 - **A budget watchdog.** `budgetUsd` interrupts the session upstream as soon as settled spend
   reaches it; Anthropic additionally enforces it natively.
 - **stop()** that reaches the hosted session; a `signal` only detaches.
@@ -61,7 +64,7 @@ import { anyplex } from "anyplex";
 const agent = anyplex({
   provider: "openai",                 // "anthropic" | "openai" | "google" | "cursor" | your Provider
   apiKey: process.env.OPENAI_API_KEY!,
-  model: "gpt-6-astra",
+  model: "gpt-6-astra",               // or omit `provider` and route with model: "openai/gpt-6-astra"
   instructions: "You fix failing tests in the repository you are given.",
   tools: [
     {
@@ -133,7 +136,7 @@ call `agent.attach(state.ref, state)` from the new process.
 | `pending` | `ToolRequest`s the agent is waiting on (`kind: "tool"` or `"approval"`). |
 | `respond(id, { output })` / `respond(id, { error })` | Answer a `tool.request`. |
 | `approve(id, allow, reason?)` | Answer an `approval.request` (Anthropic). |
-| `artifacts()` / `readArtifact(a)` | Files produced in the sandbox (Gemini: list only; Cursor: the workspace `artifacts/` directory). |
+| `artifacts()` / `readArtifact(a)` | Files produced in the sandbox (Gemini: list only; Cursor: `/opt/cursor/artifacts`). |
 | `stop()` | Interrupt and delete (Anthropic, OpenAI), cancel (Gemini), cancel the run and delete the agent (Cursor). |
 | `state()` / `ref` | Everything to `attach()` from another process. Gemini's `ref.sessionId` advances on every turn, so persist after each pass. |
 | `spentUsd`, `uncertain`, `outcome` | Settled spend, whether any of it is an estimate, the last pass's outcome. |
@@ -244,20 +247,42 @@ on a number or a lifecycle.
 
 - Cloud Agents need a Cursor Pro plan or above: a free account gets `403 plan_required` on
   every endpoint, including `/v1/me`, so `start()` fails immediately with that code.
+- `POST /v1/agents` blocks until the VM is provisioned, about 60 s live, and the connection can
+  be reset before it answers while the agent is created anyway. anyplex sends a client-chosen
+  `agentId` and converges on it (retry answers `409 agent_id_conflict`, or the agent is fetched
+  by id), so a reset never leaks a second agent. Follow-up runs return in about a second.
+  Passing `envVars` through `providerOptions` disables this, because Cursor refuses `agentId`
+  next to it.
+- The usage endpoint carries `cost.chargedCents` (undocumented, observed live); anyplex uses
+  it as the settled spend, so `rates` only matter if that field disappears. A one-command
+  `claude-haiku-4-5` run cost $0.006 to $0.03 depending on prompt-cache writes.
+- Model ids come from `GET /v1/models` (`claude-haiku-4-5`, `composer-2.5`, `gpt-5.4-nano`,
+  `default`, ...); an unknown id fails at `start()` with `400 invalid_model`.
 - There is no system-prompt field in the REST API (the SDK's `systemPrompt` is local-only).
   anyplex prepends `instructions` to the first prompt; later turns rely on the conversation.
+- The final reply is streamed as `assistant` deltas and then repeated in the `result` event;
+  anyplex emits it once. Every simplified event is mirrored by an `interaction_update` frame
+  with the same id, and `result` and `done` share an id; anyplex ignores the mirrors.
 - No client tools: the agent can only reach your code through an MCP server you host. Input
   files, network policy, packages, and setup commands have no mapping either; repositories are
   GitHub only and must already be connected through Cursor's GitHub App.
 - One run per agent at a time. `send()` while a run is still winding down would get
   `409 agent_busy`; anyplex waits up to 30 s for the previous run to settle and retries.
-- The run stream has a retention window (`X-Cursor-Stream-Retention-Seconds`). After it,
-  `attach()` settles from the run object, whose transcript is only the final reply. Earlier
-  runs always replay as their final reply only.
-- Usage is token counts per run, polled after the run ends. There is no published rate
-  table; pass `rates` for your model or the session is priced at the fallback rate and marked
-  `uncertain`.
-- `stop()` cancels the active run and deletes the agent; a budget stop only cancels.
+- A run's stream is not open right after the run is created: it answers two `status` frames,
+  then `error stream_unavailable` and `done`, about two seconds in. anyplex re-checks the run
+  and reconnects with backoff; the first run's stream is ready by the time the create call
+  returns, so this only shows on `send()`.
+- The run stream is retained for 24 h (`X-Cursor-Stream-Retention-Seconds: 86400`). After
+  that, `attach()` settles from the run object, whose transcript is only the final reply.
+  Earlier runs always replay as their final reply only, fetched one by one because the run
+  list omits `result`; attaching without state to a three-run agent took 12 s live and
+  reported the cost of all runs.
+- The agent works in `/agent` (a plain VM, home `/home/ubuntu`). Only files under
+  `/opt/cursor/artifacts` (a symlink into Cursor's store) are listed by `artifacts()`, as
+  `artifacts/<name>`; a file written to `./artifacts` in the workspace is not. Tell the agent
+  the absolute path; `capabilities("cursor").artifactsDirectory` is it.
+- `stop()` cancels the active run and deletes the agent (about 6 s live); a budget stop only
+  cancels, and since spend is known only after the run ends, it fires after the run finished.
 - No-repo agents (no `repositories`) must be enabled for the account; repository-scoped keys
   cannot create them.
 
@@ -277,30 +302,30 @@ on a number or a lifecycle.
 
 | Behaviour | Anthropic | OpenAI | Gemini | Cursor |
 |---|---|---|---|---|
-| Create agent, start session, stream to completion | live | live | live | fake |
-| Tool call and result in the unified transcript | live | live | live | fake |
-| Spend settles with the provider's figure | live | live | live | fake |
-| `attach()` mid-run, after completion with state, after completion without state | live | live | live | fake |
-| Budget watchdog interrupts the session | live | live | live | fake |
-| `stop()` reaches the hosted session | live | live | live | fake |
-| `attach()` to a stopped session ends cleanly | live | live | live | fake |
-| `signal` abort detaches and the session keeps running | live | live | live | fake |
-| Wrong key and unknown model rejected at `start()` | live | live | live | live (`plan_required` on a free account) |
-| Second turn with `send()` | live | live | live | fake |
+| Create agent, start session, stream to completion | live | live | live | live |
+| Tool call and result in the unified transcript | live | live | live | live |
+| Spend settles with the provider's figure | live | live | live | live (`cost.chargedCents`) |
+| `attach()` mid-run, after completion with state, after completion without state | live | live | live | live |
+| Budget watchdog interrupts the session | live | live | live | live (fires after the run) |
+| `stop()` reaches the hosted session | live | live | live | live |
+| `attach()` to a stopped session ends cleanly | live | live | live | live |
+| `signal` abort detaches and the session keeps running | live | live | live | live |
+| Wrong key and unknown model rejected at `start()` | live | live | live | live |
+| Second turn with `send()` | live | live | live | live |
 | Client tool round trip (`tool.request` → `respond()`) | live | live | live | n/a |
 | Approval round trip (`approval.request` → `approve()`) | fake | n/a | n/a | n/a |
 | Environment files (mounted and read by the agent) | live | live | live | n/a |
 | Repositories, network, packages, MCP mapping | fake | fake | fake | fake (repositories, MCP) |
-| Artifacts list and read | live (`/mnt/session/outputs`) | live (`/workspace/outputs`) | live (list only, whole environment) | fake (`artifacts/`) |
+| Artifacts list and read | live (`/mnt/session/outputs`) | live (`/workspace/outputs`) | live (list only, whole environment) | live (`/opt/cursor/artifacts`) |
+| Earlier runs replay as transcript on attach without state | n/a | n/a | n/a | live (three-run agent) |
 | Expired stream settles from the run object | n/a | n/a | n/a | fake |
-| Two concurrent sessions on one cached agent | live | not run (cost) | live | fake |
+| Two concurrent sessions on one cached agent | live | not run (cost) | live | live |
 | Native provider budget (`budget_reached`) | fake | n/a | n/a | n/a |
 | Self-hosted environments, subagents, long runs, load | not covered | not covered | not covered | not covered |
 
 The live suite is `pnpm e2e:live`; `test/live-scenarios.test.ts` is the list above as code.
-Cursor's fake follows the published OpenAPI spec rather than live traffic: on 2026-09-14 the
-test account answered `403 plan_required` to every call, so the live suite is wired
-(`ANYPLEX_LIVE=cursor`) but has not run. Expect the fake to be corrected once it has.
+Cursor was verified on 2026-09-14 with `claude-haiku-4-5` on a Pro plan: eleven scenarios,
+about $0.15 in total, one-command runs costing $0.006 to $0.03 each.
 
 ## Testing
 

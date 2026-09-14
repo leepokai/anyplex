@@ -40,7 +40,7 @@ const VENDOR: Record<ProviderName, { key: string; model: string; badModel: strin
   },
   cursor: {
     key: "CURSOR_API_KEY",
-    model: process.env.ANYPLEX_CURSOR_MODEL ?? "composer-2",
+    model: process.env.ANYPLEX_CURSOR_MODEL ?? "claude-haiku-4-5",
     badModel: "cursor-does-not-exist",
   },
 };

@@ -40,7 +40,7 @@ const clients = [
     provider: "cursor",
     apiKey: "fake",
     baseUrl: cursor.url,
-    model: "composer-2",
+    model: "composer-2.5",
     instructions: "x",
   }),
 ];

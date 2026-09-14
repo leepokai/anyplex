@@ -13,25 +13,30 @@ export interface TokenRate {
 }
 
 const ANTHROPIC_DEFAULTS = { cacheWriteMultiplier: 1.25, cacheReadMultiplier: 0.1 } as const;
+const ANTHROPIC: Record<string, TokenRate> = {
+  "claude-fable-5": { inputPerMtok: 10, outputPerMtok: 50, ...ANTHROPIC_DEFAULTS },
+  "claude-opus-5": { inputPerMtok: 5, outputPerMtok: 25, ...ANTHROPIC_DEFAULTS },
+  "claude-opus-4-8": { inputPerMtok: 5, outputPerMtok: 25, ...ANTHROPIC_DEFAULTS },
+  "claude-sonnet-5": { inputPerMtok: 2, outputPerMtok: 10, ...ANTHROPIC_DEFAULTS },
+  "claude-haiku-4-5": { inputPerMtok: 1, outputPerMtok: 5, ...ANTHROPIC_DEFAULTS },
+};
 
 /** First-party list prices recorded on 2026-08-31; update this date with price changes. */
 export const RATES: Record<ProviderName, Record<string, TokenRate>> = {
-  anthropic: {
-    "claude-fable-5": { inputPerMtok: 10, outputPerMtok: 50, ...ANTHROPIC_DEFAULTS },
-    "claude-opus-5": { inputPerMtok: 5, outputPerMtok: 25, ...ANTHROPIC_DEFAULTS },
-    "claude-opus-4-8": { inputPerMtok: 5, outputPerMtok: 25, ...ANTHROPIC_DEFAULTS },
-    "claude-sonnet-5": { inputPerMtok: 2, outputPerMtok: 10, ...ANTHROPIC_DEFAULTS },
-    "claude-haiku-4-5": { inputPerMtok: 1, outputPerMtok: 5, ...ANTHROPIC_DEFAULTS },
-  },
+  anthropic: ANTHROPIC,
   openai: {
     "gpt-5": { inputPerMtok: 1.25, outputPerMtok: 10, cacheReadMultiplier: 0.1 },
     "gpt-5-mini": { inputPerMtok: 0.25, outputPerMtok: 2, cacheReadMultiplier: 0.1 },
   },
   // Gemini hosted-agent pricing is undisclosed as of 2026-09-13.
   google: {},
-  // Cursor bills cloud agents through the account's plan; per-model prices are not published
-  // as a table. Pass `rates` for the model you use.
-  cursor: {},
+  // Cursor bills usage-based agent runs at the model's API list price (cursor.com/pricing);
+  // its model ids for Claude match Anthropic's, so that table is reused. Composer, Grok, and
+  // the rest have no public per-token price: pass `rates` or accept the fallback estimate.
+  cursor: {
+    ...ANTHROPIC,
+    "gpt-5-mini": { inputPerMtok: 0.25, outputPerMtok: 2, cacheReadMultiplier: 0.1 },
+  },
 };
 
 /** Conservative estimate for unrecognized models. */

@@ -38,6 +38,7 @@ export {
   type AttachOptions,
   anyplex,
   capabilities,
+  parseModel,
   type Session,
   type SessionState,
   type StartOptions,

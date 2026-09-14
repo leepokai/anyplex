@@ -27,6 +27,15 @@ export interface FakeCursorOptions {
   models?: string[];
   /** End every run with ERROR instead of FINISHED. Default false. */
   failRuns?: boolean;
+  /**
+   * For this long after a run is created, its stream answers `status`, `error stream_unavailable`,
+   * `done` and closes, like the live API right after a follow-up run. Default 300.
+   */
+  streamWarmupMs?: number;
+  /** Report `cost.chargedCents` on the usage endpoint like the live API. Default true. */
+  reportCost?: boolean;
+  /** Charged cents per run when `reportCost` is on. Default 3 (a haiku run observed live). */
+  centsPerRun?: number;
 }
 
 export interface FakeCursorRun {
@@ -59,7 +68,14 @@ export interface FakeCursorState {
   agents: Map<string, FakeCursorAgent>;
 }
 
-const DEFAULT_MODELS = ["composer-2", "claude-4.6-sonnet-thinking", "auto"];
+// From GET /v1/models on 2026-09-14 (a subset).
+const DEFAULT_MODELS = [
+  "default",
+  "composer-2.5",
+  "claude-haiku-4-5",
+  "claude-sonnet-4-6",
+  "gpt-5.4-nano",
+];
 
 export function createFakeCursor(options: FakeCursorOptions = {}) {
   const eventDelayMs = options.eventDelayMs ?? 30;
@@ -71,6 +87,9 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
   const usageDelayMs = options.usageDelayMs ?? 0;
   const retentionMs = options.streamRetentionMs ?? Number.POSITIVE_INFINITY;
   const models = options.models ?? DEFAULT_MODELS;
+  const reportCost = options.reportCost ?? true;
+  const streamWarmupMs = options.streamWarmupMs ?? 300;
+  const centsPerRun = options.centsPerRun ?? 3;
   const state: FakeCursorState = { agents: new Map() };
   const app = new Hono();
   let eventClock = 0;
@@ -163,7 +182,11 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
         name: "run_terminal_cmd",
         status: "completed",
         args,
-        result: { success: { output: `run ${runNo} step ${step}\n`, exitCode: 0 } },
+        // Shape observed live 2026-09-14 for run_terminal_cmd.
+        result: {
+          success: { command: args.command, stdout: `run ${runNo} step ${step}\n` },
+          isBackground: false,
+        },
       });
     }
     const finish = async (status: FakeCursorRun["status"], text: string | null) => {
@@ -234,8 +257,13 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
     const model = body.model as { id?: string } | undefined;
     if (model?.id && !models.includes(model.id))
       return error(c, 400, "invalid_model", `Unknown model ${model.id}`);
+    const requestedId = typeof body.agentId === "string" ? body.agentId : null;
+    if (requestedId && body.envVars)
+      return error(c, 400, "validation_error", "agentId cannot be combined with envVars");
+    if (requestedId && state.agents.has(requestedId))
+      return error(c, 409, "agent_id_conflict", "Agent id already exists");
     const agent: FakeCursorAgent = {
-      id: `bc-${fakeId("cursor")}`,
+      id: requestedId ?? `bc-${fakeId("cursor")}`,
       name: typeof body.name === "string" ? body.name : prompt.text.slice(0, 40),
       status: "ACTIVE",
       request: body,
@@ -291,7 +319,13 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
   app.get("/v1/agents/:id/runs", (c) => {
     const agent = findAgent(c.req.param("id"));
     if (!agent) return error(c, 404, "agent_not_found", "No such agent");
-    return c.json({ items: [...agent.runs].reverse().map((run) => runJson(agent, run)) });
+    // Like the live API, list items carry no `result` or `durationMs`; fetch a run for those.
+    return c.json({
+      items: [...agent.runs].reverse().map((run) => {
+        const { result: _result, durationMs: _duration, ...summary } = runJson(agent, run);
+        return summary;
+      }),
+    });
   });
 
   app.get("/v1/agents/:id/runs/:runId", (c) => {
@@ -307,6 +341,25 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
     if (!agent || !run) return error(c, 404, "run_not_found", "No such run");
     if (Date.now() - run.endedAt > retentionMs)
       return error(c, 410, "stream_expired", "Stream retention window elapsed");
+    if (Date.now() - Date.parse(run.createdAt) < streamWarmupMs)
+      return streamSSE(c, async (s) => {
+        await s.writeSSE({
+          event: "status",
+          data: JSON.stringify({ runId: run.id, status: "CREATING" }),
+        });
+        await s.writeSSE({
+          event: "status",
+          data: JSON.stringify({ runId: run.id, status: run.status }),
+        });
+        await s.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            code: "stream_unavailable",
+            message: "Run stream is no longer available",
+          }),
+        });
+        await s.writeSSE({ event: "done", data: "{}" });
+      });
     const lastEventId = c.req.header("last-event-id");
     let from = 0;
     if (lastEventId) {
@@ -351,12 +404,22 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
     const runId = c.req.query("runId");
     const runs = runId ? agent.runs.filter((run) => run.id === runId) : agent.runs;
     if (runId && !runs.length) return error(c, 404, "run_not_found", "No such run");
-    const perRun = runs.map((run) => ({ id: run.id, usage: runUsage(run) }));
+    const charged = (run: FakeCursorRun) => (runUsage(run).totalTokens > 0 ? centsPerRun : 0);
+    const perRun = runs.map((run) => ({
+      id: run.id,
+      usage: runUsage(run),
+      ...(reportCost ? { cost: { rawCostCents: charged(run), chargedCents: charged(run) } } : {}),
+    }));
     const totalUsage = usageJson(0);
     for (const entry of perRun)
       for (const key of Object.keys(totalUsage) as (keyof typeof totalUsage)[])
         totalUsage[key] += entry.usage[key];
-    return c.json({ totalUsage, runs: perRun });
+    const totalCents = runs.reduce((sum, run) => sum + charged(run), 0);
+    return c.json({
+      totalUsage,
+      ...(reportCost ? { cost: { rawCostCents: totalCents, chargedCents: totalCents } } : {}),
+      runs: perRun,
+    });
   });
 
   app.get("/v1/agents/:id/artifacts", (c) => {

@@ -9,7 +9,7 @@ const config = {
   anthropic: { key: "ANTHROPIC_API_KEY", model: "claude-haiku-4-5" },
   openai: { key: "OPENAI_API_KEY", model: "gpt-6-astra" },
   google: { key: "GEMINI_API_KEY", model: "gemini-3.8-flash" },
-  cursor: { key: "CURSOR_API_KEY", model: "composer-2" },
+  cursor: { key: "CURSOR_API_KEY", model: "claude-haiku-4-5" },
 }[provider];
 const apiKey = process.env[config.key];
 if (!apiKey) throw new Error(`${config.key} is not set`);

@@ -54,7 +54,8 @@ requests?, outcome }`. The runner owns the invariants:
   provider stamps `${interactionId}:${n}`; the same position always gets the same id.
 - **run-scoped ids**: Cursor's SSE ids are opaque per run, so the provider stamps
   `${runId}:${id}`. Earlier runs replay as their final reply (stale); when the current run's
-  stream has expired (410), the run object stands in for it.
+  stream is not open yet (`stream_unavailable` right after `send()`) or has expired (410), the
+  provider re-checks the run object and reconnects with backoff, or settles from it.
 
 ## 4. Spend
 
@@ -62,8 +63,8 @@ Each provider reports spend its own way, normalised into one `Spend`:
 
 | Kind | Source | Runner rule |
 |---|---|---|
-| `list_cost_usd` | Anthropic `session.usage` event from the history (the session object stays at zero until a turn ends; list cost is whole cents) | delta = total − spent |
-| `tokens_total` | Gemini `step.stop` / `interaction.completed` usage; OpenAI session or turn usage (late, polled); Cursor `GET /usage` totals across runs (polled) | delta = snapshot − previous snapshot; the snapshot resets when the session id advances |
+| `list_cost_usd` | Anthropic `session.usage` event from the history (the session object stays at zero until a turn ends; list cost is whole cents); Cursor `GET /usage` `cost.chargedCents` across runs (fractional cents, polled) | delta = total − spent, rounded to a millionth of a dollar |
+| `tokens_total` | Gemini `step.stop` / `interaction.completed` usage; OpenAI session or turn usage (late, polled); Cursor token totals when the cost field is absent | delta = snapshot − previous snapshot; the snapshot resets when the session id advances |
 | `tokens_delta` | reserved for providers that report per-turn deltas | priced as-is |
 
 Token spend is priced by `computeCost` from the built-in table plus `rates` overrides; unknown
