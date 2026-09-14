@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 (2026-09-14)
+
+- New provider `cursor`: Cursor Cloud Agents API v1 (agents + runs, SSE with `Last-Event-ID`,
+  cancel, usage, artifacts). No SDK dependency: eight endpoints over `fetch`. Instructions are
+  prepended to the first prompt (no system-prompt field); client tools, input files, network,
+  packages, setup commands, permissions are refused as unsupported; MCP servers and GitHub
+  repositories map natively. `anyplex/fakes` gains `startFakeCursor()` (expired streams, late
+  usage, failing runs, `plan_required`-style errors). Live verification is blocked on a Pro
+  plan; the fake follows the published OpenAPI spec.
+- `AnyplexError`: every rejection from a session method now carries the vendor's `status`,
+  `code`, a `retryable` hint, and the original error as `cause`. `UnsupportedError` extends it.
+  A `failed` outcome carries `code` and `status` when known. Callers that matched on vendor
+  SDK error classes must switch to `AnyplexError` (0.x breaking change, made now so it is the
+  last one on this surface).
+- `spend.updated` carries the token `usage` delta behind the update when the provider reports
+  tokens.
+- `docs/gateway-readiness.md`: the compatibility promise and the additive plan for building a
+  LiteLLM-style relay on top of the package.
+
 ## 0.2.0 (2026-09-14)
 
 The adapter grew from "one prompt, one session" into a full application interface:

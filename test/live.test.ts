@@ -1,14 +1,15 @@
-// Opt-in smoke against the real vendors (costs money). ANYPLEX_LIVE=anthropic,openai,google
-// with ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY in the environment or a root .env.
+// Opt-in smoke against the real vendors (costs money). ANYPLEX_LIVE=anthropic,openai,google,cursor
+// with ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / CURSOR_API_KEY in the environment or
+// a root .env.
 import { appendFileSync, existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { anyplex, type ProviderName, type SessionEvent } from "../src/index.ts";
+import { anyplex, PROVIDERS, type ProviderName, type SessionEvent } from "../src/index.ts";
 
 if (existsSync(".env")) process.loadEnvFile(".env");
 const live = (process.env.ANYPLEX_LIVE ?? "")
   .split(",")
   .map((p) => p.trim())
-  .filter((p): p is ProviderName => p === "anthropic" || p === "openai" || p === "google");
+  .filter((p): p is ProviderName => (PROVIDERS as readonly string[]).includes(p));
 
 const MODELS: Record<ProviderName, { key: string; model: string }> = {
   anthropic: {
@@ -18,6 +19,8 @@ const MODELS: Record<ProviderName, { key: string; model: string }> = {
   // Agents API accepted gpt-6-astra, gpt-5.2-codex, gpt-5.2 on 2026-09-13; only gpt-6-astra completed a turn.
   openai: { key: "OPENAI_API_KEY", model: process.env.ANYPLEX_OPENAI_MODEL ?? "gpt-6-astra" },
   google: { key: "GEMINI_API_KEY", model: process.env.ANYPLEX_GOOGLE_MODEL ?? "gemini-3.8-flash" },
+  // Cloud Agents need a Pro plan; a free account answers 403 plan_required on every endpoint.
+  cursor: { key: "CURSOR_API_KEY", model: process.env.ANYPLEX_CURSOR_MODEL ?? "composer-2" },
 };
 
 describe.skipIf(live.length === 0)("live", () => {

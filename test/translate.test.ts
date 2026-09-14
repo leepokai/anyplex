@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseListCostUsd, translateAnthropic, usdToCents } from "../src/providers/anthropic.ts";
+import { cursorTokenUsage, translateCursor } from "../src/providers/cursor.ts";
 import { googleTokenUsage, translateGoogle } from "../src/providers/google.ts";
 import { openaiTokenUsage, translateOpenAI } from "../src/providers/openai.ts";
 
@@ -193,5 +194,118 @@ describe("google", () => {
       kind: "failed",
       error: "nope",
     });
+  });
+});
+
+describe("cursor", () => {
+  it("maps usage with both cache directions", () => {
+    expect(
+      cursorTokenUsage({
+        inputTokens: 10,
+        outputTokens: 2,
+        cacheWriteTokens: 3,
+        cacheReadTokens: 4,
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 2, cacheWriteTokens: 3, cacheReadTokens: 4 });
+    expect(cursorTokenUsage(null)).toBeNull();
+  });
+  it("maps stream frames and run objects per the published spec", () => {
+    const text = translateCursor({
+      runId: "run-1",
+      event: "assistant",
+      id: "1-0",
+      data: { text: "hi" },
+    });
+    expect(text.upstreamId).toBe("run-1:1-0");
+    expect(text.events).toEqual([{ type: "message.delta", payload: { text: "hi" } }]);
+    const running = translateCursor({
+      runId: "run-1",
+      event: "tool_call",
+      id: "1-1",
+      data: { callId: "c1", name: "read_file", status: "running", args: { path: "README.md" } },
+    });
+    expect(running.events[0]).toMatchObject({
+      type: "tool.call",
+      payload: { id: "c1", name: "read_file" },
+    });
+    const completed = translateCursor({
+      runId: "run-1",
+      event: "tool_call",
+      id: "1-2",
+      data: {
+        callId: "c1",
+        name: "read_file",
+        status: "completed",
+        result: { success: { content: "# P" } },
+      },
+    });
+    expect(completed.events[0]).toMatchObject({
+      type: "tool.result",
+      payload: { id: "c1", is_error: false, content: { content: "# P" } },
+    });
+    expect(
+      translateCursor({
+        runId: "run-1",
+        event: "tool_call",
+        id: "1-3",
+        data: {
+          callId: "c2",
+          name: "run_terminal_cmd",
+          status: "completed",
+          result: { error: "boom" },
+        },
+      }).events[0]?.payload,
+    ).toMatchObject({ is_error: true });
+    const finished = translateCursor({
+      runId: "run-1",
+      event: "result",
+      id: "1-9",
+      data: { runId: "run-1", status: "FINISHED", text: "done", durationMs: 5 },
+    });
+    expect(finished).toMatchObject({
+      upstreamId: "run-1:1-9",
+      pollSpend: true,
+      outcome: { kind: "completed" },
+    });
+    expect(
+      translateCursor({ runId: "run-1", event: "result", id: "1-9", data: { status: "ERROR" } })
+        .outcome.kind,
+    ).toBe("failed");
+    expect(
+      translateCursor({ runId: "run-1", event: "result", id: "1-9", data: { status: "CANCELLED" } })
+        .outcome,
+    ).toEqual({ kind: "terminated" });
+    // The sticky status frame has no id and never dedupes; heartbeats and interaction_update are noise.
+    expect(
+      translateCursor({ runId: "run-1", event: "status", id: null, data: { status: "RUNNING" } })
+        .upstreamId,
+    ).toBeNull();
+    expect(
+      translateCursor({ runId: "run-1", event: "heartbeat", id: "1-4", data: {} }).events,
+    ).toEqual([]);
+    expect(
+      translateCursor({ runId: "run-1", event: "interaction_update", id: "1-5", data: {} }).events,
+    ).toEqual([]);
+    // A run object stands in for a stream that expired; an earlier run is transcript only.
+    const fromObject = translateCursor({
+      runId: "run-1",
+      event: "run",
+      id: "result",
+      data: { id: "run-1", status: "FINISHED", result: "Added README." },
+    });
+    expect(fromObject.events[0]).toEqual({
+      type: "message.delta",
+      payload: { text: "Added README." },
+    });
+    expect(fromObject.outcome).toEqual({ kind: "completed" });
+    const earlier = translateCursor({
+      runId: "run-0",
+      event: "run",
+      id: "result",
+      data: { id: "run-0", status: "FINISHED", result: "old" },
+      stale: true,
+    });
+    expect(earlier.outcome).toEqual({ kind: "continue" });
+    expect(earlier.pollSpend).toBeUndefined();
   });
 });

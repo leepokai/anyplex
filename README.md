@@ -7,9 +7,10 @@ One session interface for hosted agent runtimes.
 | `anthropic` | Claude Managed Agents (`managed-agents-2026-04-01`) | beta, verified live |
 | `openai` | OpenAI Agents API (`client.beta.agents`) | public beta since 2026-09-10, verified live with `gpt-6-astra` |
 | `google` | Gemini Managed Agents (Interactions API, `antigravity-preview-05-2026`) | preview, verified live with `gemini-3.8-flash` |
+| `cursor` | Cursor Cloud Agents API v1 (`api.cursor.com`) | public beta, verified against the published spec only; live blocked on a Pro plan (see below) |
 
-The three runtimes converged on the same shape: a persisted agent, a hosted session with its own
-sandbox, and an event stream. anyplex drives all three through one loop and gives an
+The four runtimes converged on the same shape: a persisted agent, a hosted session with its own
+sandbox, and an event stream. anyplex drives all of them through one loop and gives an
 application every layer it needs, in one vocabulary:
 
 - **Definition.** Instructions, model, tools the application executes, MCP servers with
@@ -34,9 +35,14 @@ application every layer it needs, in one vocabulary:
   you already saw, treats earlier turns as transcript only, and never reopens an answered
   request. Works where the provider has no replay (OpenAI) or no event ids (Gemini).
 - **Artifacts.** List and read the files the agent left in its sandbox.
-- **Fakes.** `anyplex/fakes` ships test doubles for all three APIs, shaped from live traffic
-  including their timing quirks, so your own tests never spend money.
+- **Fakes.** `anyplex/fakes` ships test doubles for all four APIs, shaped from live traffic
+  (or, for Cursor, the published spec) including their timing quirks, so your own tests never
+  spend money.
+- **Errors you can route on.** Every rejection is an `AnyplexError` with the vendor's `status`,
+  `code`, a `retryable` hint, and the original error as `cause`.
 - **Your own runtime.** Implement `Provider` and pass the object instead of a name.
+- **A relay on top.** `docs/gateway-readiness.md` is the compatibility promise for building a
+  LiteLLM-style multi-tenant relay over this package without a breaking change.
 
 ## Install
 
@@ -53,7 +59,7 @@ provider you use. `anyplex/fakes` additionally needs `hono` and `@hono/node-serv
 import { anyplex } from "anyplex";
 
 const agent = anyplex({
-  provider: "openai",                 // "anthropic" | "openai" | "google" | your Provider
+  provider: "openai",                 // "anthropic" | "openai" | "google" | "cursor" | your Provider
   apiKey: process.env.OPENAI_API_KEY!,
   model: "gpt-6-astra",
   instructions: "You fix failing tests in the repository you are given.",
@@ -100,19 +106,20 @@ call `agent.attach(state.ref, state)` from the new process.
 
 ## The definition
 
-| Field | Meaning | anthropic | openai | google |
-|---|---|---|---|---|
-| `tools` | Tools the application executes; arrive as `tool.request` | custom tools | function tools | function tools |
-| `mcpServers` | Remote MCP servers the agent may call | `mcp_servers` + toolset; bearer tokens in a vault | `mcp` tool with http transport, bearer and headers | `mcp_server` tool with headers |
-| `environment.files` | Text files placed in the sandbox | Files API upload + session resource, mounted under `/mnt/session/uploads/` | inline files (base64) at the given path | inline sources at the given path |
-| `environment.repositories` | Repositories cloned in | `github_repository` resource with token and branch | `git clone` setup command (emulated) | repository source, no token |
-| `environment.network` | `"unrestricted"`, `"none"`, or `{ allowedHosts }` | environment networking | environment network | allowlist / disabled |
-| `environment.packages` | `npm`, `pip`, `apt` | environment packages | environment packages | unsupported |
-| `environment.setupCommands` | Shell commands before the agent starts | unsupported | setup commands | unsupported |
-| `permissions` | `"allow"`, `"ask"`, `"auto"` for built-in tools | toolset permission policy | unsupported | unsupported |
-| `rates` | Price overrides by model id | any | any | any |
-| `providerOptions` | Raw params merged into `agent`, `session`, `environment` creates | yes | yes | yes |
-| `store` | Where the provider-side agent id is cached | `MemoryStore` (default), `FileStore`, your own | | |
+| Field | Meaning | anthropic | openai | google | cursor |
+|---|---|---|---|---|---|
+| `instructions` | System prompt | agent `system` | agent `instructions` | agent instructions | no REST field: prepended to the first prompt (emulated) |
+| `tools` | Tools the application executes; arrive as `tool.request` | custom tools | function tools | function tools | unsupported (MCP only) |
+| `mcpServers` | Remote MCP servers the agent may call | `mcp_servers` + toolset; bearer tokens in a vault | `mcp` tool with http transport, bearer and headers | `mcp_server` tool with headers | inline `mcpServers` (http) with headers; bearer becomes `Authorization` |
+| `environment.files` | Text files placed in the sandbox | Files API upload + session resource, mounted under `/mnt/session/uploads/` | inline files (base64) at the given path | inline sources at the given path | unsupported |
+| `environment.repositories` | Repositories cloned in | `github_repository` resource with token and branch | `git clone` setup command (emulated) | repository source, no token | `repos[]` with `startingRef`; access through Cursor's GitHub App, no token |
+| `environment.network` | `"unrestricted"`, `"none"`, or `{ allowedHosts }` | environment networking | environment network | allowlist / disabled | unsupported |
+| `environment.packages` | `npm`, `pip`, `apt` | environment packages | environment packages | unsupported | unsupported |
+| `environment.setupCommands` | Shell commands before the agent starts | unsupported | setup commands | unsupported | unsupported |
+| `permissions` | `"allow"`, `"ask"`, `"auto"` for built-in tools | toolset permission policy | unsupported | unsupported | unsupported |
+| `rates` | Price overrides by model id | any | any | any | any (no built-in table) |
+| `providerOptions` | Raw params merged into `agent`, `session`, `environment` creates | yes | yes | yes | `agent` and `session` merge into the create body; `environment` becomes `env` |
+| `store` | Where the provider-side agent id is cached | `MemoryStore` (default), `FileStore`, your own | | | no provider-side object; the store is unused |
 
 `capabilities(provider)` returns the same information as data (`native`, `emulated`,
 `unsupported`). Using an unsupported field throws `UnsupportedError` from `anyplex()`.
@@ -126,14 +133,18 @@ call `agent.attach(state.ref, state)` from the new process.
 | `pending` | `ToolRequest`s the agent is waiting on (`kind: "tool"` or `"approval"`). |
 | `respond(id, { output })` / `respond(id, { error })` | Answer a `tool.request`. |
 | `approve(id, allow, reason?)` | Answer an `approval.request` (Anthropic). |
-| `artifacts()` / `readArtifact(a)` | Files produced in the sandbox (Gemini: list only). |
-| `stop()` | Interrupt and delete (Anthropic, OpenAI) or cancel (Gemini). |
+| `artifacts()` / `readArtifact(a)` | Files produced in the sandbox (Gemini: list only; Cursor: the workspace `artifacts/` directory). |
+| `stop()` | Interrupt and delete (Anthropic, OpenAI), cancel (Gemini), cancel the run and delete the agent (Cursor). |
 | `state()` / `ref` | Everything to `attach()` from another process. Gemini's `ref.sessionId` advances on every turn, so persist after each pass. |
 | `spentUsd`, `uncertain`, `outcome` | Settled spend, whether any of it is an estimate, the last pass's outcome. |
 
 Outcomes: `completed` (the turn is done; `send()` is allowed), `requires_action` (answer
 `pending`), `budget_exceeded`, `terminated` (the provider ended it), `stopped`, `detached`
-(your `signal` aborted; the session keeps running), `failed`.
+(your `signal` aborted; the session keeps running), `failed` (with the vendor's `code` and
+`status` when known).
+
+Every rejection from a session method is an `AnyplexError` (`provider`, `status`, `code`,
+`retryable`, `cause`); `UnsupportedError` is one of them.
 
 ## Examples
 
@@ -146,8 +157,8 @@ Run one with `pnpm example examples/basic.ts`.
 
 anyplex is an adapter layer and nothing more. It does not persist anything, queue anything,
 retry beyond the vendor SDK defaults, or run a loop of its own. The agent loop, the sandbox,
-the model, and the bill all belong to the provider; anyplex only speaks their three dialects
-through one interface. All three APIs are beta or preview and may change under it.
+the model, and the bill all belong to the provider; anyplex only speaks their four dialects
+through one interface. All four APIs are beta or preview and may change under it.
 
 ## Things that will bite you
 
@@ -229,6 +240,27 @@ on a number or a lifecycle.
 - Artifacts can be listed but not downloaded through the public API; repository tokens and
   packages have no mapping.
 
+**Cursor specifics**
+
+- Cloud Agents need a Cursor Pro plan or above: a free account gets `403 plan_required` on
+  every endpoint, including `/v1/me`, so `start()` fails immediately with that code.
+- There is no system-prompt field in the REST API (the SDK's `systemPrompt` is local-only).
+  anyplex prepends `instructions` to the first prompt; later turns rely on the conversation.
+- No client tools: the agent can only reach your code through an MCP server you host. Input
+  files, network policy, packages, and setup commands have no mapping either; repositories are
+  GitHub only and must already be connected through Cursor's GitHub App.
+- One run per agent at a time. `send()` while a run is still winding down would get
+  `409 agent_busy`; anyplex waits up to 30 s for the previous run to settle and retries.
+- The run stream has a retention window (`X-Cursor-Stream-Retention-Seconds`). After it,
+  `attach()` settles from the run object, whose transcript is only the final reply. Earlier
+  runs always replay as their final reply only.
+- Usage is token counts per run, polled after the run ends. There is no published rate
+  table; pass `rates` for your model or the session is priced at the fallback rate and marked
+  `uncertain`.
+- `stop()` cancels the active run and deletes the agent; a budget stop only cancels.
+- No-repo agents (no `repositories`) must be enabled for the account; repository-scoped keys
+  cannot create them.
+
 **Anthropic specifics**
 
 - `session.usage` is the settled figure for a turn; anyplex reads it from the event history
@@ -243,34 +275,38 @@ on a number or a lifecycle.
 "Live" means against the real vendor with a real key; "fake" means against the test doubles in
 `anyplex/fakes`, whose shapes and timing quirks were captured from live traffic on 2026-09-13.
 
-| Behaviour | Anthropic | OpenAI | Gemini |
-|---|---|---|---|
-| Create agent, start session, stream to completion | live | live | live |
-| Tool call and result in the unified transcript | live | live | live |
-| Spend settles with the provider's figure | live | live | live |
-| `attach()` mid-run, after completion with state, after completion without state | live | live | live |
-| Budget watchdog interrupts the session | live | live | live |
-| `stop()` reaches the hosted session | live | live | live |
-| `attach()` to a stopped session ends cleanly | live | live | live |
-| `signal` abort detaches and the session keeps running | live | live | live |
-| Wrong key and unknown model rejected at `start()` | live | live | live |
-| Second turn with `send()` | live | live | live |
-| Client tool round trip (`tool.request` → `respond()`) | live | live | live |
-| Approval round trip (`approval.request` → `approve()`) | fake | n/a | n/a |
-| Environment files (mounted and read by the agent) | live | live | live |
-| Repositories, network, packages, MCP mapping | fake | fake | fake |
-| Artifacts list and read | live (`/mnt/session/outputs`) | live (`/workspace/outputs`) | live (list only, whole environment) |
-| Two concurrent sessions on one cached agent | live | not run (cost) | live |
-| Native provider budget (`budget_reached`) | fake | n/a | n/a |
-| Self-hosted environments, subagents, long runs, load | not covered | not covered | not covered |
+| Behaviour | Anthropic | OpenAI | Gemini | Cursor |
+|---|---|---|---|---|
+| Create agent, start session, stream to completion | live | live | live | fake |
+| Tool call and result in the unified transcript | live | live | live | fake |
+| Spend settles with the provider's figure | live | live | live | fake |
+| `attach()` mid-run, after completion with state, after completion without state | live | live | live | fake |
+| Budget watchdog interrupts the session | live | live | live | fake |
+| `stop()` reaches the hosted session | live | live | live | fake |
+| `attach()` to a stopped session ends cleanly | live | live | live | fake |
+| `signal` abort detaches and the session keeps running | live | live | live | fake |
+| Wrong key and unknown model rejected at `start()` | live | live | live | live (`plan_required` on a free account) |
+| Second turn with `send()` | live | live | live | fake |
+| Client tool round trip (`tool.request` → `respond()`) | live | live | live | n/a |
+| Approval round trip (`approval.request` → `approve()`) | fake | n/a | n/a | n/a |
+| Environment files (mounted and read by the agent) | live | live | live | n/a |
+| Repositories, network, packages, MCP mapping | fake | fake | fake | fake (repositories, MCP) |
+| Artifacts list and read | live (`/mnt/session/outputs`) | live (`/workspace/outputs`) | live (list only, whole environment) | fake (`artifacts/`) |
+| Expired stream settles from the run object | n/a | n/a | n/a | fake |
+| Two concurrent sessions on one cached agent | live | not run (cost) | live | fake |
+| Native provider budget (`budget_reached`) | fake | n/a | n/a | n/a |
+| Self-hosted environments, subagents, long runs, load | not covered | not covered | not covered | not covered |
 
 The live suite is `pnpm e2e:live`; `test/live-scenarios.test.ts` is the list above as code.
+Cursor's fake follows the published OpenAPI spec rather than live traffic: on 2026-09-14 the
+test account answered `403 plan_required` to every call, so the live suite is wired
+(`ANYPLEX_LIVE=cursor`) but has not run. Expect the fake to be corrected once it has.
 
 ## Testing
 
 ```sh
 pnpm test                       # translators + session runner against the fakes, no keys
-pnpm e2e:live                   # real vendors (ANYPLEX_LIVE=anthropic,openai,google), needs keys, costs money
+pnpm e2e:live                   # real vendors (ANYPLEX_LIVE=anthropic,openai,google,cursor), needs keys, costs money
 ```
 
 Use the same fakes in your own suite:
@@ -284,8 +320,9 @@ const agent = anyplex({ provider: "openai", apiKey: "fake", baseUrl: `${fake.url
 await fake.close();
 ```
 
-`startFakeAnthropic()` and `startFakeGoogle()` take `baseUrl: fake.url` (the SDKs add their own
-prefixes). Options script client tool calls, approvals, late usage, refused deletes, budgets.
+`startFakeAnthropic()`, `startFakeGoogle()`, and `startFakeCursor()` take `baseUrl: fake.url`
+(the SDKs add their own prefixes). Options script client tool calls, approvals, late usage,
+refused deletes, expired streams, failing runs, budgets.
 
 ## License
 

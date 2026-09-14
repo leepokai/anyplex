@@ -1,5 +1,6 @@
 // Live behaviour scenarios (opt-in, costs money): everything the fake suite covers, against the
-// real vendors, plus the failure modes a first-time user hits. ANYPLEX_LIVE=anthropic,openai,google.
+// real vendors, plus the failure modes a first-time user hits.
+// ANYPLEX_LIVE=anthropic,openai,google,cursor.
 import { existsSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
@@ -9,6 +10,7 @@ import {
   anyplex,
   capabilities,
   MemoryStore,
+  PROVIDERS,
   type ProviderName,
   type SessionEvent,
   type SessionRef,
@@ -18,7 +20,7 @@ if (existsSync(".env")) process.loadEnvFile(".env");
 const live = (process.env.ANYPLEX_LIVE ?? "")
   .split(",")
   .map((p) => p.trim())
-  .filter((p): p is ProviderName => p === "anthropic" || p === "openai" || p === "google");
+  .filter((p): p is ProviderName => (PROVIDERS as readonly string[]).includes(p));
 
 const VENDOR: Record<ProviderName, { key: string; model: string; badModel: string }> = {
   anthropic: {
@@ -35,6 +37,11 @@ const VENDOR: Record<ProviderName, { key: string; model: string; badModel: strin
     key: "GEMINI_API_KEY",
     model: process.env.ANYPLEX_GOOGLE_MODEL ?? "gemini-3.8-flash",
     badModel: "gemini-does-not-exist",
+  },
+  cursor: {
+    key: "CURSOR_API_KEY",
+    model: process.env.ANYPLEX_CURSOR_MODEL ?? "composer-2",
+    badModel: "cursor-does-not-exist",
   },
 };
 
@@ -87,6 +94,19 @@ async function upstreamStatus(
     if (provider === "openai") {
       const s = await new OpenAI({ apiKey }).beta.agents.sessions.retrieve(ref.sessionId);
       return s.status;
+    }
+    if (provider === "cursor") {
+      const headers = { authorization: `Bearer ${apiKey}` };
+      const agent = (await (
+        await fetch(`https://api.cursor.com/v1/agents/${ref.sessionId}`, { headers })
+      ).json()) as { status?: string; latestRunId?: string; error?: { code: string } };
+      if (agent.error) return `error:${agent.error.code}`;
+      const run = (await (
+        await fetch(`https://api.cursor.com/v1/agents/${ref.sessionId}/runs/${agent.latestRunId}`, {
+          headers,
+        })
+      ).json()) as { status?: string };
+      return `${agent.status}/${run.status}`;
     }
     const i = await new GoogleGenAI({ apiKey }).interactions.get(ref.sessionId);
     return i.status ?? "unknown";
@@ -295,68 +315,79 @@ function scenarios(provider: ProviderName) {
       );
     });
 
-    it("hands a client tool to the application and continues after respond()", {
-      timeout,
-    }, async () => {
-      const withTool = anyplex({
-        provider,
-        apiKey,
-        model,
-        instructions:
-          "You are a terse assistant. To answer weather questions you must call the `weather` tool and then report its result verbatim.",
-        tools: [
-          {
-            name: "weather",
-            description: "Current weather for a city.",
-            parameters: {
-              type: "object",
-              properties: { city: { type: "string" } },
-              required: ["city"],
+    it.skipIf(capabilities(provider).clientTools === "unsupported")(
+      "hands a client tool to the application and continues after respond()",
+      { timeout },
+      async () => {
+        const withTool = anyplex({
+          provider,
+          apiKey,
+          model,
+          instructions:
+            "You are a terse assistant. To answer weather questions you must call the `weather` tool and then report its result verbatim.",
+          tools: [
+            {
+              name: "weather",
+              description: "Current weather for a city.",
+              parameters: {
+                type: "object",
+                properties: { city: { type: "string" } },
+                required: ["city"],
+              },
             },
-          },
-        ],
-        store,
-      });
-      const session = await withTool.start({
-        prompt: "What is the weather in Taipei right now?",
-        budgetUsd: 1,
-      });
-      const first = await collect(session.events());
-      const outcome = outcomeOf(first);
-      note(
-        `${provider}: tool pass 1 -> ${JSON.stringify(outcome)} pending=${JSON.stringify(session.pending.map((r) => ({ name: r.name, input: r.input })))}`,
-      );
-      expect(outcome?.kind).toBe("requires_action");
-      const request = session.pending[0];
-      expect(request?.name).toBe("weather");
-      await session.respond(request?.id as string, {
-        output: { city: "Taipei", temperatureC: 27, sky: "clear" },
-      });
-      const rest = await collect(session.events());
-      const text = rest
-        .filter((e) => e.type === "message.delta")
-        .map((e) => (e.payload as { text: string }).text)
-        .join(" ");
-      note(
-        `${provider}: tool pass 2 -> ${JSON.stringify(outcomeOf(rest))}, text=${JSON.stringify(text.slice(0, 120))}, spend $${session.spentUsd}${session.uncertain ? " (est)" : ""}`,
-      );
-      expect(outcomeOf(rest)).toEqual({ kind: "completed" });
-      expect(text).toMatch(/27/);
-    });
+          ],
+          store,
+        });
+        const session = await withTool.start({
+          prompt: "What is the weather in Taipei right now?",
+          budgetUsd: 1,
+        });
+        const first = await collect(session.events());
+        const outcome = outcomeOf(first);
+        note(
+          `${provider}: tool pass 1 -> ${JSON.stringify(outcome)} pending=${JSON.stringify(session.pending.map((r) => ({ name: r.name, input: r.input })))}`,
+        );
+        expect(outcome?.kind).toBe("requires_action");
+        const request = session.pending[0];
+        expect(request?.name).toBe("weather");
+        await session.respond(request?.id as string, {
+          output: { city: "Taipei", temperatureC: 27, sky: "clear" },
+        });
+        const rest = await collect(session.events());
+        const text = rest
+          .filter((e) => e.type === "message.delta")
+          .map((e) => (e.payload as { text: string }).text)
+          .join(" ");
+        note(
+          `${provider}: tool pass 2 -> ${JSON.stringify(outcomeOf(rest))}, text=${JSON.stringify(text.slice(0, 120))}, spend $${session.spentUsd}${session.uncertain ? " (est)" : ""}`,
+        );
+        expect(outcomeOf(rest)).toEqual({ kind: "completed" });
+        expect(text).toMatch(/27/);
+      },
+    );
 
     it("mounts a file and lists the artifacts the agent produced", { timeout }, async () => {
+      // Cursor takes no input files: the agent is told the word instead of reading it.
+      const canMount = capabilities(provider).files !== "unsupported";
+      const dir = capabilities(provider).artifactsDirectory ?? "/workspace/outputs";
       const withFile = anyplex({
         provider,
         apiKey,
         model,
         instructions: INSTRUCTIONS,
-        environment: {
-          files: [{ path: "/workspace/notes.md", content: "The secret word is pomelo.\n" }],
-        },
+        ...(canMount
+          ? {
+              environment: {
+                files: [{ path: "/workspace/notes.md", content: "The secret word is pomelo.\n" }],
+              },
+            }
+          : {}),
         store,
       });
       const session = await withFile.start({
-        prompt: `Read /workspace/notes.md, then write the secret word into ${capabilities(provider).artifactsDirectory ?? "/workspace/outputs"}/secret.txt (create the directory) using shell commands, then reply with the secret word.`,
+        prompt: canMount
+          ? `Read /workspace/notes.md, then write the secret word into ${dir}/secret.txt (create the directory) using shell commands, then reply with the secret word.`
+          : `The secret word is pomelo. Write it into ${dir}/secret.txt (create the directory) using shell commands, then reply with the secret word.`,
         budgetUsd: 1,
       });
       const events = await collect(session.events());

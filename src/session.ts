@@ -13,6 +13,7 @@ import type {
   ToolResult,
 } from "./provider.ts";
 import { anthropic } from "./providers/anthropic.ts";
+import { cursor } from "./providers/cursor.ts";
 import { google } from "./providers/google.ts";
 import { openai } from "./providers/openai.ts";
 import {
@@ -33,10 +34,11 @@ import {
   type TokenUsage,
   type ToolRequest,
   type ToolSpec,
+  toAnyplexError,
   UnsupportedError,
 } from "./types.ts";
 
-const BUILTIN: Record<ProviderName, Provider> = { anthropic, openai, google };
+const BUILTIN: Record<ProviderName, Provider> = { anthropic, openai, google, cursor };
 
 export interface AnyplexOptions {
   /** A built-in provider name, or your own `Provider` implementation. */
@@ -192,6 +194,14 @@ export function anyplex(options: AnyplexOptions): Anyplex {
       }),
     )
     .digest("hex");
+  // Every rejection from a session method is an AnyplexError with the vendor's status and code.
+  const guarded = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      throw toAnyplexError(provider.name, err);
+    }
+  };
   const context = (remainingBudgetUsd: number | null): ProviderContext => ({
     provider: provider.name,
     apiKey: options.apiKey,
@@ -209,22 +219,38 @@ export function anyplex(options: AnyplexOptions): Anyplex {
       const ctx = context(start.budgetUsd ?? null);
       let agent = await store.get(agentKey);
       if (!agent) {
-        agent = await provider.createAgent(ctx, signal);
+        agent = await guarded(() => provider.createAgent(ctx, signal));
         await store.set(agentKey, agent);
       }
-      const created = await provider.createSession(ctx, agent, start.prompt, signal);
+      const created = await guarded(() => provider.createSession(ctx, agent, start.prompt, signal));
       const ref: SessionRef = {
         provider: provider.name,
         sessionId: created.sessionId,
         agentId: agent.agentId,
         environmentId: created.environmentId ?? agent.environmentId,
       };
-      return createSession(provider, context, ref, {}, start.budgetUsd ?? null, start.signal);
+      return createSession(
+        provider,
+        context,
+        guarded,
+        ref,
+        {},
+        start.budgetUsd ?? null,
+        start.signal,
+      );
     },
     attach(ref, attach = {}) {
       if (ref.provider !== provider.name)
         throw new Error(`session belongs to ${ref.provider}, not ${provider.name}`);
-      return createSession(provider, context, ref, attach, attach.budgetUsd ?? null, attach.signal);
+      return createSession(
+        provider,
+        context,
+        guarded,
+        ref,
+        attach,
+        attach.budgetUsd ?? null,
+        attach.signal,
+      );
     },
   };
 }
@@ -242,6 +268,7 @@ function subtractUsage(total: TokenUsage, previous: TokenUsage | null): TokenUsa
 function createSession(
   provider: Provider,
   context: (remainingBudgetUsd: number | null) => ProviderContext,
+  guarded: <T>(run: () => Promise<T>) => Promise<T>,
   initialRef: SessionRef,
   initial: Partial<Omit<SessionState, "ref">>,
   budgetUsd: number | null,
@@ -260,29 +287,34 @@ function createSession(
   outerSignal?.addEventListener("abort", () => abort.abort(outerSignal.reason), { once: true });
   const ctx = () => context(budgetUsd === null ? null : Math.max(0, budgetUsd - spentUsd));
 
-  /** Normalize a provider spend report into a USD delta. */
-  const spendDelta = (spend: Spend): { costUsd: number; estimated: boolean } => {
+  /** Normalize a provider spend report into a USD delta (and the token delta behind it). */
+  const spendDelta = (
+    spend: Spend,
+  ): { costUsd: number; estimated: boolean; usage?: TokenUsage } => {
     const c = ctx();
     switch (spend.kind) {
       case "list_cost_usd":
         return { costUsd: Math.max(0, spend.totalUsd - spentUsd), estimated: false };
       case "tokens_delta":
-        return computeCost(c.provider, c.definition.model, spend.usage, c.rates);
+        return {
+          ...computeCost(c.provider, c.definition.model, spend.usage, c.rates),
+          usage: spend.usage,
+        };
       case "tokens_total": {
         const delta = subtractUsage(spend.usage, usageTotal);
         usageTotal = spend.usage;
-        return computeCost(c.provider, c.definition.model, delta, c.rates);
+        return { ...computeCost(c.provider, c.definition.model, delta, c.rates), usage: delta };
       }
     }
   };
   const apply = (spend: Spend): SessionEvent | null => {
-    const { costUsd, estimated } = spendDelta(spend);
+    const { costUsd, estimated, usage } = spendDelta(spend);
     if (costUsd <= 0) return null;
     spentUsd = Math.round((spentUsd + costUsd) * 1e6) / 1e6;
     uncertain = uncertain || estimated;
     return {
       type: "spend.updated",
-      payload: { spent_usd: spentUsd, delta_usd: costUsd, uncertain },
+      payload: { spent_usd: spentUsd, delta_usd: costUsd, uncertain, ...(usage ? { usage } : {}) },
       upstreamId: null,
     };
   };
@@ -341,8 +373,15 @@ function createSession(
     } catch (err) {
       // Upstream errors end the pass instead of throwing: every pass ends with `session.ended`,
       // and the error text travels in the outcome.
-      if (!stopRequested && !abort.signal.aborted)
-        result = { kind: "failed", error: err instanceof Error ? err.message : String(err) };
+      if (!stopRequested && !abort.signal.aborted) {
+        const e = toAnyplexError(provider.name, err);
+        result = {
+          kind: "failed",
+          error: e.message,
+          ...(e.code ? { code: e.code } : {}),
+          ...(e.status ? { status: e.status } : {}),
+        };
+      }
     }
     if (stopRequested) result = { kind: "stopped" };
     else if (abort.signal.aborted) result = { kind: "detached" };
@@ -441,28 +480,33 @@ function createSession(
     events,
     async send(prompt) {
       if (pending.size) throw new Error("answer the pending requests before sending a new message");
-      advance((await provider.sendMessage(ctx(), ref, prompt)) ?? undefined);
+      advance((await guarded(() => provider.sendMessage(ctx(), ref, prompt))) ?? undefined);
     },
     async respond(id, result) {
       const request = takePending(id, "tool");
-      advance((await provider.sendToolResult(ctx(), ref, request, result)) ?? undefined);
+      advance(
+        (await guarded(() => provider.sendToolResult(ctx(), ref, request, result))) ?? undefined,
+      );
       pending.delete(id);
       answered.add(id);
     },
     async approve(id, allow, reason) {
       const request = takePending(id, "approval");
-      if (!provider.confirmTool) throw new UnsupportedError(provider.name, ["approvals"]);
-      await provider.confirmTool(ctx(), ref, request, allow, reason);
+      const confirm = provider.confirmTool;
+      if (!confirm) throw new UnsupportedError(provider.name, ["approvals"]);
+      await guarded(() => confirm(ctx(), ref, request, allow, reason));
       pending.delete(id);
       answered.add(id);
     },
     async artifacts() {
-      if (!provider.listArtifacts) throw new UnsupportedError(provider.name, ["artifactsList"]);
-      return provider.listArtifacts(ctx(), ref);
+      const list = provider.listArtifacts;
+      if (!list) throw new UnsupportedError(provider.name, ["artifactsList"]);
+      return guarded(() => list(ctx(), ref));
     },
     async readArtifact(artifact) {
-      if (!provider.readArtifact) throw new UnsupportedError(provider.name, ["artifactsRead"]);
-      return provider.readArtifact(ctx(), ref, artifact);
+      const read = provider.readArtifact;
+      if (!read) throw new UnsupportedError(provider.name, ["artifactsRead"]);
+      return guarded(() => read(ctx(), ref, artifact));
     },
     async stop() {
       stopRequested = true;

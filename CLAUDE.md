@@ -1,9 +1,10 @@
 # anyplex
 
 One session interface for hosted agent runtimes: Anthropic Managed Agents, the OpenAI Agents
-API, and Gemini Managed Agents behind one definition, one event stream, one turn model, one
-spend model, and lossless re-attach. An adapter layer only: no persistence, no queue, no loop
-of its own.
+API, Gemini Managed Agents, and Cursor Cloud Agents behind one definition, one event stream,
+one turn model, one spend model, and lossless re-attach. An adapter layer only: no persistence,
+no queue, no loop of its own. A multi-tenant relay may be built on top later; the contract it
+relies on is written down in `docs/gateway-readiness.md`.
 
 @docs/file-structure.md
 @docs/architecture.md
@@ -16,6 +17,8 @@ of its own.
   verification protocol.
 - `README.md` sections "Things that will bite you" and "What has been verified" are the public
   record of vendor behaviour; update them in the same change that changes behaviour.
+- `docs/gateway-readiness.md` for the compatibility rules (additive only, JSON everywhere,
+  `AnyplexError`) and the planned additive fields. Do not add a field that breaks them.
 
 ## Rules
 

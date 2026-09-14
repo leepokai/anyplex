@@ -1,7 +1,7 @@
 // The vocabulary every provider is projected onto. Translators are pure functions from a raw
 // upstream event to a Translation; the session runner turns Translations into SessionEvents.
 
-export const PROVIDERS = ["anthropic", "openai", "google"] as const;
+export const PROVIDERS = ["anthropic", "openai", "google", "cursor"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
 export interface TokenUsage {
@@ -88,7 +88,8 @@ export type Outcome =
   | { kind: "stopped" }
   /** The start/attach `signal` aborted: this process let go, the upstream session keeps running. Re-attach later. */
   | { kind: "detached" }
-  | { kind: "failed"; error: string };
+  /** `code` and `status` carry the vendor's error code and HTTP status when known. */
+  | { kind: "failed"; error: string; code?: string; status?: number };
 
 /**
  * How a provider reports spend. Anthropic prices the session itself (list cost, cumulative);
@@ -154,9 +155,10 @@ export type SessionEvent =
       upstreamId: string | null;
     }
   | { type: "harness.event"; payload: Record<string, unknown>; upstreamId: string | null }
+  /** `usage` is the token delta behind this update when the provider reports tokens. */
   | {
       type: "spend.updated";
-      payload: { spent_usd: number; delta_usd: number; uncertain: boolean };
+      payload: { spent_usd: number; delta_usd: number; uncertain: boolean; usage?: TokenUsage };
       upstreamId: null;
     }
   /** The last event of every events() pass. `completed` means the turn is done and send() is allowed. */
@@ -235,14 +237,63 @@ export class FileStore implements AgentStore {
   }
 }
 
-export class UnsupportedError extends Error {
+/**
+ * Every error a session method throws: the vendor's HTTP status and error code, normalized, with
+ * the original error as `cause`. `retryable` is a hint (408, 429, 5xx) for callers that retry.
+ */
+export class AnyplexError extends Error {
+  readonly provider: string;
+  readonly status: number | null;
+  readonly code: string | null;
+  readonly retryable: boolean;
   constructor(
-    readonly provider: string,
+    provider: string,
+    message: string,
+    options: {
+      status?: number | null;
+      code?: string | null;
+      cause?: unknown;
+      retryable?: boolean;
+    } = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "AnyplexError";
+    this.provider = provider;
+    this.status = options.status ?? null;
+    this.code = options.code ?? null;
+    this.retryable =
+      options.retryable ??
+      (this.status !== null && (this.status === 408 || this.status === 429 || this.status >= 500));
+  }
+}
+
+export class UnsupportedError extends AnyplexError {
+  constructor(
+    provider: string,
     readonly features: string[],
   ) {
-    super(`${provider} does not support: ${features.join(", ")}`);
+    super(provider, `${provider} does not support: ${features.join(", ")}`, {
+      code: "unsupported",
+      retryable: false,
+    });
     this.name = "UnsupportedError";
   }
+}
+
+/** Normalize a vendor SDK error (Anthropic, OpenAI, Google, fetch) into an AnyplexError. */
+export function toAnyplexError(provider: string, err: unknown): AnyplexError {
+  if (err instanceof AnyplexError) return err;
+  const e = (err && typeof err === "object" ? err : {}) as Record<string, unknown>;
+  const status =
+    [e.status, e.statusCode, record(e.response)?.status]
+      .map((value) => (typeof value === "number" ? value : Number.NaN))
+      .find((value) => Number.isFinite(value) && value > 0) ?? null;
+  const body = record(e.error);
+  const inner = record(body?.error);
+  const code =
+    str(e.code) ?? str(body?.code) ?? str(inner?.code) ?? str(body?.type) ?? str(inner?.type);
+  const message = err instanceof Error ? err.message : String(err);
+  return new AnyplexError(provider, message, { status, code, cause: err });
 }
 
 export const CONTINUE: TranslationOutcome = { kind: "continue" };

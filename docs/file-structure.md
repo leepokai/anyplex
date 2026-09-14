@@ -14,12 +14,14 @@ anyplex/
 │   ├── providers/
 │   │   ├── anthropic.ts        Claude Managed Agents: pure translateAnthropic + the provider object
 │   │   ├── openai.ts           OpenAI Agents API: pure translateOpenAI + the provider object
-│   │   └── google.ts           Gemini Managed Agents (Interactions): pure translateGoogle + the provider object
+│   │   ├── google.ts           Gemini Managed Agents (Interactions): pure translateGoogle + the provider object
+│   │   └── cursor.ts           Cursor Cloud Agents v1 over fetch: pure translateCursor + SSE reader + the provider object
 │   └── fakes/                  Published as `anyplex/fakes`: test doubles shaped from live traffic
 │       ├── timeline.ts         A session as an append-only timeline that runs without a listener
 │       ├── anthropic.ts        /v1/environments, agents, vaults, files, sessions, events (list, send, SSE)
 │       ├── openai.ts           /v1/agents, sessions, events (POST input, GET SSE), items, turns, artifacts
 │       ├── google.ts           /v1beta/agents, interactions (background, replayed SSE, cancel), environment files
+│       ├── cursor.ts           /v1/agents, runs (SSE with ids, Last-Event-ID, 410 after retention), usage, artifacts
 │       └── index.ts
 ├── test/
 │   ├── translate.test.ts       Translator unit tests: shapes observed live
@@ -27,7 +29,7 @@ anyplex/
 │   ├── live.test.ts            Opt-in smoke against the real vendors (ANYPLEX_LIVE)
 │   └── live-scenarios.test.ts  Opt-in lifecycle scenarios against the real vendors
 ├── examples/                   Runnable scripts (pnpm example examples/<name>.ts)
-├── docs/                       This folder: structure, architecture, conventions
+├── docs/                       This folder: structure, architecture, conventions, gateway-readiness (relay plan)
 ├── .github/workflows/ci.yml    install, check, lint, test, build on push and pull request
 ├── package.json                exports "." and "./fakes"; vendor SDKs are dependencies, hono is an optional peer
 ├── tsconfig.json / tsconfig.build.json   Type-check everything; emit `dist/` from `src/` only

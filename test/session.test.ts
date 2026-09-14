@@ -1,10 +1,12 @@
 // Session runner against the fake upstreams: every layer of the abstraction, for every provider.
 import { afterAll, describe, expect, it } from "vitest";
 import { startFakeAnthropic } from "../src/fakes/anthropic.ts";
+import { startFakeCursor } from "../src/fakes/cursor.ts";
 import { startFakeGoogle } from "../src/fakes/google.ts";
 import { startFakeOpenAI } from "../src/fakes/openai.ts";
 import type { FakeServer } from "../src/fakes/timeline.ts";
 import {
+  AnyplexError,
   type AnyplexOptions,
   anyplex,
   capabilities,
@@ -33,6 +35,7 @@ interface Vendor {
 type AnthropicState = Awaited<ReturnType<typeof startFakeAnthropic>>["state"];
 type OpenAIState = Awaited<ReturnType<typeof startFakeOpenAI>>["state"];
 type GoogleState = Awaited<ReturnType<typeof startFakeGoogle>>["state"];
+type CursorState = Awaited<ReturnType<typeof startFakeCursor>>["state"];
 
 const VENDORS: Vendor[] = [
   {
@@ -72,6 +75,22 @@ const VENDORS: Vendor[] = [
     lowBudgetUsd: 0.02,
     stopped: (state, id) => (state as GoogleState).interactions.get(id)?.cancelled === true,
     interrupted: (state, id) => (state as GoogleState).interactions.get(id)?.cancelled === true,
+    toolOption: "functionTool",
+  },
+  {
+    provider: "cursor",
+    model: "composer-2",
+    start: (opts) => startFakeCursor({ eventDelayMs: 15, ...opts }),
+    base: (url) => url,
+    // No published rate for composer-2: the fallback rate prices 1000 in + 200 out at $0.03.
+    turnUsd: 0.03,
+    lowBudgetUsd: 0.02,
+    stopped: (state, id) => {
+      const a = (state as CursorState).agents.get(id);
+      return a?.deleted === true && a.runs.some((run) => run.cancelled);
+    },
+    // A budget stop after the run already finished can only attempt a cancel (409 upstream).
+    interrupted: (state, id) => ((state as CursorState).agents.get(id)?.cancelAttempts ?? 0) > 0,
     toolOption: "functionTool",
   },
 ];
@@ -196,58 +215,61 @@ for (const vendor of VENDORS) {
       if (vendor.provider === "google") expect(session.ref.sessionId).not.toBe(firstId);
     });
 
-    it("hands a client tool call to the application and continues after respond()", async () => {
-      const { client } = await agent(
-        { [vendor.toolOption]: "lookup" },
-        {
-          tools: [
-            {
-              name: "lookup",
-              description: "look something up",
-              parameters: { type: "object", properties: { query: { type: "string" } } },
-            },
-          ],
-        },
-      );
-      const session = await client.start({ prompt: "use the tool", budgetUsd: 5 });
-      const first = await collect(session.events());
-      const outcome = ended(first).outcome;
-      expect(outcome.kind).toBe("requires_action");
-      expect(types(first)).toContain("tool.request");
-      expect(session.pending).toHaveLength(1);
-      const request = session.pending[0];
-      expect(request?.name).toBe("lookup");
-      expect(request?.input).toEqual({ query: "fake" });
-      await expect(session.send("nope")).rejects.toThrow(/pending/);
-      await session.respond(request?.id as string, { output: { answer: 42 } });
-      expect(session.pending).toHaveLength(0);
-      const rest = await collect(session.events());
-      expect(ended(rest).outcome).toEqual({ kind: "completed" });
-      const text = rest
-        .filter((e) => e.type === "message.delta")
-        .map((e) => (e.payload as { text: string }).text)
-        .join(" ");
-      expect(text).toContain("42");
-    });
+    it.skipIf(capabilities(vendor.provider).clientTools === "unsupported")(
+      "hands a client tool call to the application and continues after respond()",
+      async () => {
+        const { client } = await agent(
+          { [vendor.toolOption]: "lookup" },
+          {
+            tools: [
+              {
+                name: "lookup",
+                description: "look something up",
+                parameters: { type: "object", properties: { query: { type: "string" } } },
+              },
+            ],
+          },
+        );
+        const session = await client.start({ prompt: "use the tool", budgetUsd: 5 });
+        const first = await collect(session.events());
+        const outcome = ended(first).outcome;
+        expect(outcome.kind).toBe("requires_action");
+        expect(types(first)).toContain("tool.request");
+        expect(session.pending).toHaveLength(1);
+        const request = session.pending[0];
+        expect(request?.name).toBe("lookup");
+        expect(request?.input).toEqual({ query: "fake" });
+        await expect(session.send("nope")).rejects.toThrow(/pending/);
+        await session.respond(request?.id as string, { output: { answer: 42 } });
+        expect(session.pending).toHaveLength(0);
+        const rest = await collect(session.events());
+        expect(ended(rest).outcome).toEqual({ kind: "completed" });
+        const text = rest
+          .filter((e) => e.type === "message.delta")
+          .map((e) => (e.payload as { text: string }).text)
+          .join(" ");
+        expect(text).toContain("42");
+      },
+    );
 
     it("passes environment, MCP servers, and tools through to the vendor", async () => {
+      const caps = capabilities(vendor.provider);
+      const has = (key: keyof typeof caps) => caps[key] !== "unsupported";
       const { fake, client } = await agent(
         {},
         {
-          tools: [{ name: "lookup", description: "d", parameters: { type: "object" } }],
+          ...(has("clientTools")
+            ? { tools: [{ name: "lookup", description: "d", parameters: { type: "object" } }] }
+            : {}),
           mcpServers: [{ name: "docs", url: "https://mcp.example.com/mcp", authorization: "tok" }],
           environment: {
-            files: [{ path: "/workspace/notes.md", content: "hello" }],
+            ...(has("files") ? { files: [{ path: "/workspace/notes.md", content: "hello" }] } : {}),
             repositories: [
               { url: "https://github.com/example/repo", path: "/workspace/repo", ref: "main" },
             ],
-            network: { allowedHosts: ["example.com"] },
-            ...(capabilities(vendor.provider).packages === "native"
-              ? { packages: { npm: ["left-pad"] } }
-              : {}),
-            ...(capabilities(vendor.provider).setupCommands === "native"
-              ? { setupCommands: ["echo setup"] }
-              : {}),
+            ...(has("network") ? { network: { allowedHosts: ["example.com"] } } : {}),
+            ...(caps.packages === "native" ? { packages: { npm: ["left-pad"] } } : {}),
+            ...(caps.setupCommands === "native" ? { setupCommands: ["echo setup"] } : {}),
           },
           ...(vendor.provider === "anthropic" ? { permissions: "ask" as const } : {}),
         },
@@ -269,12 +291,14 @@ for (const vendor of VENDORS) {
                 environment: (fake.state as OpenAIState).sessions.get(session.ref.sessionId)
                   ?.environment,
               }
-            : { agents: (fake.state as GoogleState).agents },
+            : vendor.provider === "google"
+              ? { agents: (fake.state as GoogleState).agents }
+              : { request: (fake.state as CursorState).agents.get(session.ref.sessionId)?.request },
       );
-      expect(json).toContain("lookup");
+      if (has("clientTools")) expect(json).toContain("lookup");
       expect(json).toContain("mcp.example.com");
-      expect(json).toContain("example.com");
-      expect(json).toContain("notes.md");
+      if (has("network")) expect(json).toContain("example.com");
+      if (has("files")) expect(json).toContain("notes.md");
       expect(json).toContain("github.com/example/repo");
       if (vendor.provider === "anthropic") {
         expect(json).toContain("static_bearer");
@@ -288,6 +312,12 @@ for (const vendor of VENDORS) {
         expect(json).toContain("restricted");
       }
       if (vendor.provider === "google") expect(json).toContain("Bearer tok");
+      if (vendor.provider === "cursor") {
+        expect(json).toContain("Bearer tok");
+        expect(json).toContain('"startingRef":"main"');
+        // No system-prompt field: the instructions lead the first prompt.
+        expect(json).toContain("Run the scripted task\\n\\ngo");
+      }
     });
 
     it("lists the artifacts the agent produced", async () => {
@@ -352,6 +382,28 @@ for (const vendor of VENDORS) {
       },
     );
 
+    it.skipIf(vendor.provider !== "cursor")(
+      "settles from the run object when the stream expired, and waits for late usage",
+      async () => {
+        const { client } = await agent({ streamRetentionMs: 0, usageDelayMs: 1500 });
+        const session = await client.start({ prompt: "go", budgetUsd: 5 });
+        const events = await collect(session.events());
+        expect(ended(events).outcome).toEqual({ kind: "completed" });
+        expect(session.spentUsd).toBe(vendor.turnUsd);
+        expect(types(events)).not.toContain("spend.unsettled");
+        // The stream is gone (410 stream_expired); the run object still tells the outcome.
+        const again = client.attach(session.ref, { budgetUsd: 5 });
+        const replay = await collect(again.events());
+        expect(ended(replay).outcome).toEqual({ kind: "completed" });
+        expect(replay.some((e) => e.type === "message.delta")).toBe(true);
+        expect(again.spentUsd).toBe(vendor.turnUsd);
+        // A run that ends in ERROR is a failed pass, not a completed one.
+        const { client: failing } = await agent({ failRuns: true });
+        const broken = await failing.start({ prompt: "go", budgetUsd: 5 });
+        expect(ended(await collect(broken.events())).outcome.kind).toBe("failed");
+      },
+    );
+
     it.skipIf(vendor.provider !== "google")(
       "ends a cancelled interaction replay with terminated",
       async () => {
@@ -369,6 +421,62 @@ for (const vendor of VENDORS) {
     );
   });
 }
+
+describe("errors and spend detail", () => {
+  it("normalizes vendor errors into AnyplexError and reports token deltas", async () => {
+    const fake = await startFakeOpenAI({ eventDelayMs: 5 });
+    servers.push(fake);
+    // A vendor SDK error (OpenAI 404 on an unknown session) and a fetch-based one (Cursor 400).
+    const gone = anyplex({
+      provider: "openai",
+      apiKey: "k",
+      baseUrl: `${fake.url}/v1`,
+      model: "gpt-5",
+      instructions: "x",
+    }).attach({ provider: "openai", sessionId: "sess_missing", agentId: "a", environmentId: null });
+    const notFound = await gone.send("hi").catch((e: unknown) => e);
+    expect(notFound).toBeInstanceOf(AnyplexError);
+    expect(notFound as AnyplexError).toMatchObject({
+      provider: "openai",
+      status: 404,
+      retryable: false,
+    });
+    expect((notFound as AnyplexError).cause).toBeDefined();
+    const cursorFake = await startFakeCursor({ eventDelayMs: 5 });
+    servers.push(cursorFake);
+    const badModel = anyplex({
+      provider: "cursor",
+      apiKey: "k",
+      baseUrl: cursorFake.url,
+      model: "no-such-model",
+      instructions: "x",
+    });
+    const invalid = await badModel.start({ prompt: "go" }).catch((e: unknown) => e);
+    expect(invalid as AnyplexError).toMatchObject({
+      provider: "cursor",
+      status: 400,
+      code: "invalid_model",
+    });
+    expect(new UnsupportedError("x", ["files"])).toBeInstanceOf(AnyplexError);
+
+    const good = anyplex({
+      provider: "openai",
+      apiKey: "k",
+      baseUrl: `${fake.url}/v1`,
+      model: "gpt-5",
+      instructions: "x",
+    });
+    const session = await good.start({ prompt: "go", budgetUsd: 1 });
+    const events = await collect(session.events());
+    const spend = events.find((e) => e.type === "spend.updated");
+    expect(spend?.type === "spend.updated" && spend.payload.usage).toEqual({
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+});
 
 describe("capabilities", () => {
   it("refuses unsupported features at construction", () => {

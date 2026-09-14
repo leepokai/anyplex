@@ -29,6 +29,9 @@ export const RATES: Record<ProviderName, Record<string, TokenRate>> = {
   },
   // Gemini hosted-agent pricing is undisclosed as of 2026-09-13.
   google: {},
+  // Cursor bills cloud agents through the account's plan; per-model prices are not published
+  // as a table. Pass `rates` for the model you use.
+  cursor: {},
 };
 
 /** Conservative estimate for unrecognized models. */

@@ -17,7 +17,7 @@
 
 ## Adding a capability
 
-Add the field to `Capabilities`, set it in all three `*Capabilities` objects, teach
+Add the field to `Capabilities`, set it in every `*Capabilities` object, teach
 `checkSupport` in `src/session.ts` which definition field uses it, map it in each provider,
 cover it in the fakes and `test/session.test.ts`, and document it in the README definition
 table.
@@ -51,3 +51,5 @@ Never make the fake more helpful than the vendor.
 
 Semantic versions. Additive session or definition fields are minor; renaming an event type,
 an outcome kind, or a `SessionState` field is major. `CHANGELOG.md` gets an entry per release.
+`docs/gateway-readiness.md` lists the compatibility rules a relay depends on; a change that
+touches them updates that document in the same commit.

@@ -1,7 +1,7 @@
 {
   "name": "anyplex",
-  "version": "0.2.0",
-  "description": "One session interface for hosted agent runtimes: Anthropic Managed Agents, OpenAI Agents API, Gemini Managed Agents. Unified events, provider-reported spend, budget watchdog, stop, and lossless re-attach.",
+  "version": "0.3.0",
+  "description": "One session interface for hosted agent runtimes: Anthropic Managed Agents, OpenAI Agents API, Gemini Managed Agents, Cursor Cloud Agents. Unified events, provider-reported spend, budget watchdog, stop, and lossless re-attach.",
   "license": "MIT",
   "author": "leepokai",
   "repository": {
@@ -56,6 +56,8 @@
     "agents-api",
     "gemini",
     "interactions",
+    "cursor",
+    "cloud-agents",
     "sdk"
   ],
   "dependencies": {

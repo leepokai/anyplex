@@ -14,6 +14,13 @@ export {
   usdToCents,
 } from "./providers/anthropic.ts";
 export {
+  CURSOR_BASE_URL,
+  cursor,
+  cursorCapabilities,
+  cursorTokenUsage,
+  translateCursor,
+} from "./providers/cursor.ts";
+export {
   google,
   googleCapabilities,
   googleTokenUsage,
@@ -38,6 +45,7 @@ export {
 export {
   type AgentRefRecord,
   type AgentStore,
+  AnyplexError,
   type Artifact,
   type Capabilities,
   type EnvironmentSpec,
@@ -58,5 +66,6 @@ export {
   type ToolRequest,
   type ToolSpec,
   type Translation,
+  toAnyplexError,
   UnsupportedError,
 } from "./types.ts";
