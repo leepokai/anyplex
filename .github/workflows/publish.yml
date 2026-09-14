@@ -1,7 +1,6 @@
-# Publish to npm on a version tag, without a token: npm Trusted Publishing exchanges the
-# workflow's GitHub OIDC identity for a short-lived credential and attaches provenance.
-# One-time setup on npmjs.com: package anyplex -> Settings -> Trusted Publisher -> GitHub Actions
-# (owner leepokai, repository anyplex, workflow publish.yml). Then: git tag v0.3.0 && git push --tags
+# Publish to npm on a version tag. Auth is the NPM_TOKEN repository secret (a granular
+# publish token); provenance is still attached through the workflow's OIDC identity.
+# Release: bump package.json, then `git tag v<version> && git push --tags`.
 name: publish
 on:
   push:
@@ -25,3 +24,5 @@ jobs:
       - run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
       # prepublishOnly runs check, test (fakes only), and build.
       - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
