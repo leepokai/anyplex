@@ -2,35 +2,41 @@
 
 One session interface for hosted agent runtimes.
 
-| Provider | API | Status on 2026-09-13 |
+| Provider | API | Status on 2026-09-14 |
 |---|---|---|
 | `anthropic` | Claude Managed Agents (`managed-agents-2026-04-01`) | beta, verified live |
 | `openai` | OpenAI Agents API (`client.beta.agents`) | public beta since 2026-09-10, verified live with `gpt-6-astra` |
 | `google` | Gemini Managed Agents (Interactions API, `antigravity-preview-05-2026`) | preview, verified live with `gemini-3.8-flash` |
 
 The three runtimes converged on the same shape: a persisted agent, a hosted session with its own
-sandbox, and an event stream. anyplex drives all three through one loop and gives you what the
-raw SDKs do not:
+sandbox, and an event stream. anyplex drives all three through one loop and gives an
+application every layer it needs, in one vocabulary:
 
-- **One event stream.** `message.delta`, `tool.call`, `tool.result`, `harness.event`,
-  `spend.updated`, `session.ended`, identical across providers.
-- **Spend that is actually right.** Anthropic prices the session (polled, because the SDK drops
-  `session.usage`); OpenAI reports usage seconds after the turn ends (waited for); Gemini
-  reports cumulative totals (diffed). Unpriced models are estimated at a deliberately expensive
-  fallback rate and flagged `uncertain`.
-- **A budget watchdog.** Pass `budgetUsd`; the session is interrupted upstream as soon as
-  settled spend reaches it. Anthropic additionally gets a native session budget. Enforcement is
-  between turns, so one long turn can overshoot.
-- **stop()** that reaches the hosted session: interrupt and delete (Anthropic), cancel and delete
-  (OpenAI), or cancel (Gemini). A `signal` only detaches; the session keeps running.
-- **Lossless re-attach.** Persist `session.ref` and `session.state()`; `attach()` replays history
-  and skips what you already saw, so a process restart duplicates neither spend nor finished
-  upstream items. Works even where the provider has no replay (OpenAI) or no event ids (Gemini).
-  An upstream item whose events you only partly consumed is redelivered in full; every event
-  carries `upstreamId`, so dedupe on it if you need exactly-once.
-- **Fakes.** `anyplex/fakes` ships test doubles for all three APIs, shaped from live traffic,
-  so your own tests never spend money. They model shapes and lifecycles, not yet the timing
-  quirks listed below.
+- **Definition.** Instructions, model, tools the application executes, MCP servers with
+  credentials, the sandbox environment (files, repositories, network, packages, setup commands),
+  and a permission policy. Each provider maps it onto its own objects; what a provider cannot do
+  is refused at construction, never silently dropped.
+- **One event stream.** `message.delta`, `tool.call`, `tool.result`, `tool.request`,
+  `approval.request`, `harness.event`, `spend.updated`, `session.ended`, identical across
+  providers.
+- **Turns.** `start()` runs the first turn; `send()` runs the next on the same session;
+  `respond()` and `approve()` answer what the agent is waiting on; `events()` drives one turn at
+  a time.
+- **Spend that is actually right.** Anthropic prices the session (read from the settled
+  `session.usage` history); OpenAI reports usage seconds to a minute after the turn (waited
+  for, with backoff); Gemini reports cumulative totals per interaction (diffed, reset per
+  chained interaction). Unpriced models use a deliberately expensive fallback rate and are
+  flagged `uncertain`; pass `rates` to price them yourself.
+- **A budget watchdog.** `budgetUsd` interrupts the session upstream as soon as settled spend
+  reaches it; Anthropic additionally enforces it natively.
+- **stop()** that reaches the hosted session; a `signal` only detaches.
+- **Lossless re-attach.** Persist `session.state()`; `attach()` replays history and skips what
+  you already saw, treats earlier turns as transcript only, and never reopens an answered
+  request. Works where the provider has no replay (OpenAI) or no event ids (Gemini).
+- **Artifacts.** List and read the files the agent left in its sandbox.
+- **Fakes.** `anyplex/fakes` ships test doubles for all three APIs, shaped from live traffic
+  including their timing quirks, so your own tests never spend money.
+- **Your own runtime.** Implement `Provider` and pass the object instead of a name.
 
 ## Install
 
@@ -39,7 +45,7 @@ pnpm add anyplex
 ```
 
 Node 22.13 or newer. The official vendor SDKs are dependencies; you only need the key of the
-provider you use.
+provider you use. `anyplex/fakes` additionally needs `hono` and `@hono/node-server`.
 
 ## Use
 
@@ -47,89 +53,94 @@ provider you use.
 import { anyplex } from "anyplex";
 
 const agent = anyplex({
-  provider: "openai",                 // "anthropic" | "openai" | "google"
+  provider: "openai",                 // "anthropic" | "openai" | "google" | your Provider
   apiKey: process.env.OPENAI_API_KEY!,
   model: "gpt-6-astra",
   instructions: "You fix failing tests in the repository you are given.",
+  tools: [
+    {
+      name: "lookup_ticket",
+      description: "Fetch a ticket from our tracker.",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  ],
+  environment: {
+    repositories: [{ url: "https://github.com/acme/api", path: "/workspace/api", ref: "main" }],
+    network: { allowedHosts: ["registry.npmjs.org"] },
+  },
 });
 
-const session = await agent.start({
-  prompt: "Run the test suite and fix the first failure.",
-  budgetUsd: 0.5,
-});
+const session = await agent.start({ prompt: "Ticket 42 says the build is red. Fix it.", budgetUsd: 2 });
 
-for await (const event of session.events()) {
-  switch (event.type) {
-    case "message.delta":  process.stdout.write(event.payload.text); break;
-    case "tool.call":      console.log("tool", event.payload.name, event.payload.input); break;
-    case "spend.updated":  console.log(`$${event.payload.spent_usd}`); break;
-    case "session.ended":  console.log(event.payload.outcome, `$${event.payload.spent_usd}`); break;
+for (;;) {
+  for await (const event of session.events()) {
+    switch (event.type) {
+      case "message.delta":   process.stdout.write(event.payload.text); break;
+      case "tool.call":       console.log("agent ran", event.payload.name); break;
+      case "tool.request":    console.log("agent asks for", event.payload.name); break;
+      case "spend.updated":   console.log(`$${event.payload.spent_usd}`); break;
+      case "session.ended":   console.log(event.payload.outcome.kind); break;
+    }
+  }
+  if (session.outcome?.kind !== "requires_action") break;
+  for (const request of session.pending) {
+    if (request.kind === "tool") await session.respond(request.id, { output: await lookupTicket(request.input) });
+    else await session.approve(request.id, true);
   }
 }
+
+await session.send("Now open a pull request description for the change.");
+for await (const event of session.events()) { /* the next turn */ }
+
+for (const artifact of await session.artifacts()) console.log(artifact.path, artifact.sizeBytes);
 ```
 
-Stop from anywhere:
+Stop from anywhere: `await session.stop()`. Survive a restart: persist `session.state()` and
+call `agent.attach(state.ref, state)` from the new process.
 
-```ts
-await session.stop(); // events() ends with { kind: "stopped" }
-```
+## The definition
 
-Survive a restart:
+| Field | Meaning | anthropic | openai | google |
+|---|---|---|---|---|
+| `tools` | Tools the application executes; arrive as `tool.request` | custom tools | function tools | function tools |
+| `mcpServers` | Remote MCP servers the agent may call | `mcp_servers` + toolset; bearer tokens in a vault | `mcp` tool with http transport, bearer and headers | `mcp_server` tool with headers |
+| `environment.files` | Text files placed in the sandbox | Files API upload + session resource, mounted under `/mnt/session/uploads/` | inline files (base64) at the given path | inline sources at the given path |
+| `environment.repositories` | Repositories cloned in | `github_repository` resource with token and branch | `git clone` setup command (emulated) | repository source, no token |
+| `environment.network` | `"unrestricted"`, `"none"`, or `{ allowedHosts }` | environment networking | environment network | allowlist / disabled |
+| `environment.packages` | `npm`, `pip`, `apt` | environment packages | environment packages | unsupported |
+| `environment.setupCommands` | Shell commands before the agent starts | unsupported | setup commands | unsupported |
+| `permissions` | `"allow"`, `"ask"`, `"auto"` for built-in tools | toolset permission policy | unsupported | unsupported |
+| `rates` | Price overrides by model id | any | any | any |
+| `providerOptions` | Raw params merged into `agent`, `session`, `environment` creates | yes | yes | yes |
+| `store` | Where the provider-side agent id is cached | `MemoryStore` (default), `FileStore`, your own | | |
 
-```ts
-// process A
-save({ ref: session.ref, state: session.state() });
+`capabilities(provider)` returns the same information as data (`native`, `emulated`,
+`unsupported`). Using an unsupported field throws `UnsupportedError` from `anyplex()`.
 
-// process B
-const resumed = agent.attach(saved.ref, { ...saved.state, budgetUsd: 0.5 });
-for await (const event of resumed.events()) { /* only what A never saw */ }
-```
+## The session
 
-Swap the provider by changing two strings. The agent object is created once per definition and
-cached in `store`: `MemoryStore` by default, `FileStore("path.json")` for anything that restarts,
-or your own `AgentStore`.
+| Member | What it does |
+|---|---|
+| `events()` | Drives the current turn and yields unified events; ends with `session.ended`. Call it again after `send()`, `respond()`, or `approve()`. |
+| `send(prompt)` | Next user turn on the same session. Refused while requests are pending. |
+| `pending` | `ToolRequest`s the agent is waiting on (`kind: "tool"` or `"approval"`). |
+| `respond(id, { output })` / `respond(id, { error })` | Answer a `tool.request`. |
+| `approve(id, allow, reason?)` | Answer an `approval.request` (Anthropic). |
+| `artifacts()` / `readArtifact(a)` | Files produced in the sandbox (Gemini: list only). |
+| `stop()` | Interrupt and delete (Anthropic, OpenAI) or cancel (Gemini). |
+| `state()` / `ref` | Everything to `attach()` from another process. Gemini's `ref.sessionId` advances on every turn, so persist after each pass. |
+| `spentUsd`, `uncertain`, `outcome` | Settled spend, whether any of it is an estimate, the last pass's outcome. |
+
+Outcomes: `completed` (the turn is done; `send()` is allowed), `requires_action` (answer
+`pending`), `budget_exceeded`, `terminated` (the provider ended it), `stopped`, `detached`
+(your `signal` aborted; the session keeps running), `failed`.
 
 ## Examples
 
 Runnable scripts in [`examples/`](examples): `basic.ts` (stream one session on any provider),
-`resume.ts` (save the ref and state, attach from a second run), `budget-and-stop.ts` (cap and
-`stop()`), `with-fakes.ts` (the whole thing with no key). Run one with
-`pnpm example examples/basic.ts`.
-
-## Outcomes
-
-`session.ended` carries one of `completed`, `budget_exceeded`, `requires_action` (the hosted
-session wants a client tool result that anyplex does not provide), `terminated` (the provider
-ended it), `stopped` (you called `stop()`), `detached` (your `signal` aborted; the session is
-still running upstream), or `failed`.
-
-## What it does not do
-
-- Move a session between providers. The model and the sandbox belong to the provider.
-- Read files out of the hosted sandbox. Use the provider's own artifact APIs.
-- Continue a session with a second prompt. One `start()` is one prompt; multi-turn is next.
-
-## Testing
-
-```sh
-pnpm test                       # translators + session runner against the fakes, no keys
-pnpm e2e:live                   # real vendors (ANYPLEX_LIVE=anthropic,openai,google), needs keys, costs money
-```
-
-Use the same fakes in your own suite (they need `hono` and `@hono/node-server` installed):
-
-```ts
-import { startFakeOpenAI } from "anyplex/fakes";
-
-const fake = await startFakeOpenAI({ eventDelayMs: 10 });
-const agent = anyplex({ provider: "openai", apiKey: "fake", baseUrl: `${fake.url}/v1`, model: "gpt-5", instructions: "..." });
-// ... run your code against it ...
-await fake.close();
-```
-
-`startFakeAnthropic()` takes `baseUrl: fake.url`; `startFakeGoogle()` takes `baseUrl: fake.url`
-as well (the SDK adds `/v1beta`). Each fake exposes `state` so a test can assert what the
-"vendor" saw: sessions, interrupts, deletes, cancellations.
+`tools-and-turns.ts` (client tool, second turn, artifacts), `resume.ts` (save the state, attach
+from a second run), `budget-and-stop.ts` (cap and `stop()`), `with-fakes.ts` (no key at all).
+Run one with `pnpm example examples/basic.ts`.
 
 ## Scope
 
@@ -140,27 +151,32 @@ through one interface. All three APIs are beta or preview and may change under i
 
 ## Things that will bite you
 
-Every item below was hit while testing against the real vendors on 2026-09-13. Read this
-before you rely on a number or a lifecycle.
+Every item below was hit while testing against the real vendors. Read this before you rely
+on a number or a lifecycle.
 
 **Spend**
 
 - Spend is the provider's figure, not your invoice. Anthropic reports public list price; OpenAI
   and Gemini report tokens that anyplex prices with a small local rate table. A model missing
   from the table (`gpt-6-astra`, every Gemini model) is priced at a deliberately expensive
-  fallback and the session is marked `uncertain`; treat those numbers as an upper bound.
+  fallback and the session is marked `uncertain`; pass `rates` or treat it as an upper bound.
 - Anthropic rounds list cost to whole cents. A short warm-cache Haiku session reports $0.00,
-  and the session object shows $0 until the turn ends. A budget below $0.01 cannot trigger,
-  and a $0.01 budget only triggers once a turn actually costs a cent.
+  and the session object shows $0 until the turn ends. A budget below $0.01 cannot trigger.
 - OpenAI reports usage asynchronously, anywhere from seconds to more than a minute after the
   turn ends. anyplex waits about a minute with backoff. If usage still has not arrived, the
-  session ends with `spent_usd: 0` and a `harness.event` of type `spend.unsettled`; call
-  `attach()` on the same ref later and the spend settles. Do not treat `session.ended` as the
-  final bill for OpenAI unless no `spend.unsettled` event was seen.
-- The budget watchdog only sees spend when the provider reports it, so it acts between turns
-  or after the turn, never inside one. For OpenAI it usually fires after the session already
-  finished. If you need a hard ceiling inside a turn, put it on the provider side (Anthropic
-  session budget, which anyplex sets from `budgetUsd`) or accept the overshoot.
+  pass ends with a `harness.event` of type `spend.unsettled`; `attach()` later settles it.
+- The budget watchdog acts between turns or after the turn, never inside one. For OpenAI it
+  usually fires after the session already finished.
+
+**Turns and requests**
+
+- One `events()` pass is one turn. When it ends with `requires_action`, nothing happens
+  upstream until you `respond()` or `approve()` every request in `pending` and call `events()`
+  again. Anthropic rejects a new `send()` while requests are pending.
+- An upstream item whose events you only partly consumed is redelivered in full on `attach()`;
+  every event carries `upstreamId`, so dedupe on it if you need exactly-once.
+- Gemini function-call arguments are taken from a single streamed chunk; multi-chunk argument
+  streams are not buffered yet.
 
 **Sessions and agents**
 
@@ -168,32 +184,50 @@ before you rely on a number or a lifecycle.
   (Gemini). Budget stops interrupt but do not delete, so the transcript stays attachable.
 - `attach()` to a session you already stopped ends with `failed` (Anthropic and OpenAI answer
   404) or `terminated` (Gemini); it never hangs.
-- With the default `MemoryStore`, every new process creates a fresh provider-side agent:
-  Anthropic makes an agent plus an environment, OpenAI an agent, Gemini reuses by id. Pass
-  `FileStore` or your own `AgentStore` in anything that restarts.
-- One `start()` is one prompt. There is no second turn on the same session yet.
+- With the default `MemoryStore`, every new process creates a fresh provider-side agent, and
+  for Anthropic also an environment and, with MCP tokens, a vault. Pass `FileStore` or your own
+  `AgentStore` in anything that restarts.
 - `events()` never throws for upstream failures; it ends with `session.ended` carrying
-  `{ kind: "failed", error }`. Wrong keys and unknown models are rejected by `start()` itself
-  within a second or two.
+  `{ kind: "failed", error }`. Wrong keys and unknown models are rejected by `start()` itself.
+
+**Artifacts and files**
+
+- Each provider collects artifacts from a different place: Anthropic from
+  `/mnt/session/outputs`, OpenAI from `/workspace/outputs`, Gemini lists the whole environment
+  (inputs included). `capabilities(provider).artifactsDirectory` says where; tell the agent to
+  write there.
+- Anthropic mounts uploaded files under `/mnt/session/uploads/<path>` and indexes outputs one to
+  three seconds after the turn ends; `artifacts()` retries twice when the list is empty.
+- Gemini can list but not download files through the public API.
 
 **OpenAI specifics**
 
 - The Agents API accepted only `gpt-6-astra`, `gpt-5.2-codex`, and `gpt-5.2` on 2026-09-13,
-  and only `gpt-6-astra` completed a turn; the other two failed upstream with `internal_error`
-  before producing anything. Any other model is refused at `start()`.
+  and only `gpt-6-astra` completed a turn; the other two failed upstream with `internal_error`.
 - The hosted environment boots in about fifteen seconds and bills container time with a
   five-minute minimum, so a tiny task still costs a few cents of compute.
 - Deleting a session whose turn is still cancelling is refused; `stop()` waits for the session
-  to leave `in_progress` before deleting, which takes a few seconds.
+  to leave `in_progress` before deleting.
+- Repositories are emulated with a `git clone` setup command; a token is embedded in the clone
+  URL and removed from the remote afterwards.
+- The hosted environment occasionally fails to provision. The session then ends `failed`, the
+  turn is no longer active, and a `respond()` to it is refused with 409 ("the hosted environment
+  failed to provision" on inspection). Start a new session; nothing on your side caused it.
+- Function-call requests surface on the session object (`required_actions`) and as in-progress
+  items before the turn completes; anyplex reads both.
 
 **Gemini specifics**
 
 - Every reconnect replays the whole interaction from the first event and `last_event_id` is
-  ignored, so `attach()` on a long interaction re-reads it in full; dedupe keeps your consumer
-  clean but the bytes still flow.
+  ignored; dedupe keeps your consumer clean but the bytes still flow.
 - A cancelled interaction replays without a terminal event; anyplex asks for the final status
   once more and ends with `terminated`.
-- Hosted-agent pricing is unpublished; all Gemini spend is an estimate.
+- Each turn is a new interaction chained with `previous_interaction_id` on the same
+  environment; `ref.sessionId` moves forward, so persist `state()` after every pass. Chaining
+  in the same instant the previous interaction settled can fail with "Precondition check
+  failed"; anyplex waits for the previous interaction to be final and retries briefly.
+- Artifacts can be listed but not downloaded through the public API; repository tokens and
+  packages have no mapping.
 
 **Anthropic specifics**
 
@@ -201,44 +235,57 @@ before you rely on a number or a lifecycle.
   because the SDK's stream parser may drop it. Polling the session object mid-turn returns zeros.
 - Sessions require Managed Agents beta access on the key; without it every call fails at
   `start()`.
+- MCP headers other than a bearer token have no mapping; bearer tokens are stored in a vault
+  created with the agent.
 
 ## What has been verified, and how far
 
-Everything below was checked on 2026-09-13. "Live" means against the real vendor with a real
-key; "fake" means against the test doubles in `test/fakes`, whose shapes were captured from
-live traffic that day.
+"Live" means against the real vendor with a real key; "fake" means against the test doubles in
+`anyplex/fakes`, whose shapes and timing quirks were captured from live traffic on 2026-09-13.
 
 | Behaviour | Anthropic | OpenAI | Gemini |
 |---|---|---|---|
-| Create agent, start session, stream to completion | live (`claude-haiku-4-5`) | live (`gpt-6-astra`) | live (`gemini-3.8-flash`) |
-| Tool call and result in the unified transcript | live | live (`command_execution`) | live (`code_execution_call` / `_result` via deltas) |
-| Spend settles with the provider's figure | live (list cost, whole cents) | live (late usage, waited for; `spend.unsettled` when it never comes) | live (cumulative totals at the fallback rate) |
+| Create agent, start session, stream to completion | live | live | live |
+| Tool call and result in the unified transcript | live | live | live |
+| Spend settles with the provider's figure | live | live | live |
 | `attach()` mid-run, after completion with state, after completion without state | live | live | live |
-| Budget watchdog interrupts the session | live ($0.01 cap on a one-cent task) | live (fires after the turn, once usage lands) | live (fires mid-interaction) |
-| Native provider budget (`budget_reached`) | fake only | n/a | n/a |
-| `stop()` reaches the hosted session | live (interrupt + delete, ~1 s) | live (cancel + delete, ~4 s) | live (cancel, ~3 s) |
-| `attach()` to a stopped session ends cleanly | live (`failed`, 404) | live (`terminated`) | live (`terminated`) |
+| Budget watchdog interrupts the session | live | live | live |
+| `stop()` reaches the hosted session | live | live | live |
+| `attach()` to a stopped session ends cleanly | live | live | live |
 | `signal` abort detaches and the session keeps running | live | live | live |
 | Wrong key and unknown model rejected at `start()` | live | live | live |
+| Second turn with `send()` | live | live | live |
+| Client tool round trip (`tool.request` → `respond()`) | live | live | live |
+| Approval round trip (`approval.request` → `approve()`) | fake | n/a | n/a |
+| Environment files (mounted and read by the agent) | live | live | live |
+| Repositories, network, packages, MCP mapping | fake | fake | fake |
+| Artifacts list and read | live (`/mnt/session/outputs`) | live (`/workspace/outputs`) | live (list only, whole environment) |
 | Two concurrent sessions on one cached agent | live | not run (cost) | live |
-| `requires_action` and provider-side `failed` paths | unit only | unit only (`internal_error` seen live on other models) | unit only |
-| Self-hosted environments, MCP and function tools, subagents, multi-turn | not covered | not covered | not covered |
+| Native provider budget (`budget_reached`) | fake | n/a | n/a |
+| Self-hosted environments, subagents, long runs, load | not covered | not covered | not covered |
 
-Nothing here has been run for longer than a few minutes or under load. The live suite is
-`pnpm e2e:live`; `test/live-scenarios.test.ts` is the list above as code.
+The live suite is `pnpm e2e:live`; `test/live-scenarios.test.ts` is the list above as code.
 
-## Provider notes
+## Testing
 
-- **OpenAI.** The Agents API accepted `gpt-6-astra`, `gpt-5.2-codex`, and `gpt-5.2` on
-  2026-09-13; only `gpt-6-astra` completed a turn, the other two failed upstream with
-  `internal_error`. Turn events carry `usage: null`; the session object fills in about seven
-  seconds after idle, and anyplex waits up to thirty seconds for it.
-- **Gemini.** Agents need a caller-chosen id (derived from the definition hash). Interactions
-  run with `environment: "remote"` and `background: true`. Events carry no ids and every reconnect
-  replays from the start; anyplex stamps ordinal ids for dedupe. Hosted-agent pricing is
-  undisclosed, so spend is an estimate.
-- **Anthropic.** Sessions are deleted at the end for hygiene. List cost is public list price,
-  not your contracted price.
+```sh
+pnpm test                       # translators + session runner against the fakes, no keys
+pnpm e2e:live                   # real vendors (ANYPLEX_LIVE=anthropic,openai,google), needs keys, costs money
+```
+
+Use the same fakes in your own suite:
+
+```ts
+import { startFakeOpenAI } from "anyplex/fakes";
+
+const fake = await startFakeOpenAI({ eventDelayMs: 10, functionTool: "lookup_ticket", usageDelayMs: 2000 });
+const agent = anyplex({ provider: "openai", apiKey: "fake", baseUrl: `${fake.url}/v1`, model: "gpt-5", instructions: "..." });
+// ... run your code against it; fake.state shows what the "vendor" saw ...
+await fake.close();
+```
+
+`startFakeAnthropic()` and `startFakeGoogle()` take `baseUrl: fake.url` (the SDKs add their own
+prefixes). Options script client tool calls, approvals, late usage, refused deletes, budgets.
 
 ## License
 

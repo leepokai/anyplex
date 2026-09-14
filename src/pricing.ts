@@ -34,19 +34,25 @@ export const RATES: Record<ProviderName, Record<string, TokenRate>> = {
 /** Conservative estimate for unrecognized models. */
 export const FALLBACK_RATE: TokenRate = { inputPerMtok: 15, outputPerMtok: 75 };
 
-export function lookupRate(provider: ProviderName, model: string): TokenRate | null {
-  const exact = RATES[provider][model];
+export function lookupRate(
+  provider: string,
+  model: string,
+  overrides: Record<string, TokenRate> = {},
+): TokenRate | null {
+  const table = { ...(RATES[provider as ProviderName] ?? {}), ...overrides };
+  const exact = table[model];
   if (exact) return exact;
   const normalized = model.replace(/\./g, "-").replace(/-\d{8}$/, "");
-  return RATES[provider][normalized] ?? null;
+  return table[normalized] ?? null;
 }
 
 export function computeCost(
-  provider: ProviderName,
+  provider: string,
   model: string,
   usage: TokenUsage,
+  overrides: Record<string, TokenRate> = {},
 ): { costUsd: number; estimated: boolean } {
-  const found = lookupRate(provider, model);
+  const found = lookupRate(provider, model, overrides);
   const rate = found ?? FALLBACK_RATE;
   const perMtok = (tokens: number, price: number) => (tokens / 1_000_000) * price;
   const costUsd =

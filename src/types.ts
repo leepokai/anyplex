@@ -11,12 +11,77 @@ export interface TokenUsage {
   cacheReadTokens?: number;
 }
 
+// ---- what an application declares once ----
+
+/** A tool the application executes itself; the hosted agent asks for it through `tool.request`. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  /** JSON Schema for the input object. */
+  parameters: Record<string, unknown>;
+}
+
+export interface McpServerSpec {
+  name: string;
+  url: string;
+  /** Bearer token; stored provider-side (Anthropic vault) or sent as a header (OpenAI, Gemini). */
+  authorization?: string;
+  headers?: Record<string, string>;
+}
+
+export interface EnvironmentSpec {
+  /** Text files placed in the sandbox before the agent starts. */
+  files?: { path: string; content: string }[];
+  /** Repositories cloned into the sandbox. */
+  repositories?: { url: string; path?: string; ref?: string; token?: string }[];
+  /** Outbound network from the sandbox. Default: the provider's default. */
+  network?: "unrestricted" | "none" | { allowedHosts: string[] };
+  packages?: { npm?: string[]; pip?: string[]; apt?: string[] };
+  /** Shell commands run once the sandbox exists, before the agent starts. */
+  setupCommands?: string[];
+}
+
+/** Who may run the agent's built-in tools: always, never without asking, or the provider decides. */
+export type PermissionPolicy = "allow" | "ask" | "auto";
+
+/** Raw parameters merged into the provider's own create calls; the escape hatch when the abstraction is not enough. */
+export interface ProviderOptions {
+  agent?: Record<string, unknown>;
+  session?: Record<string, unknown>;
+  environment?: Record<string, unknown>;
+}
+
+export type Support = "native" | "emulated" | "unsupported";
+
+export interface Capabilities {
+  multiTurn: Support;
+  clientTools: Support;
+  approvals: Support;
+  permissions: Support;
+  mcp: Support;
+  mcpAuth: Support;
+  mcpHeaders: Support;
+  files: Support;
+  repositories: Support;
+  repositoryAuth: Support;
+  network: Support;
+  packages: Support;
+  setupCommands: Support;
+  artifactsList: Support;
+  artifactsRead: Support;
+  nativeBudget: Support;
+  /** Directory the agent must write to for files to show up in `artifacts()`; null when the whole sandbox is listed. */
+  artifactsDirectory: string | null;
+}
+
+// ---- what a session produces ----
+
 export type Outcome =
   | { kind: "completed" }
   /** The provider paused or the budget watchdog stopped the session because of a spend cap. */
   | { kind: "budget_exceeded" }
-  /** The upstream session waits for a client tool result anyplex sessions do not supply. */
-  | { kind: "requires_action" }
+  /** The agent is waiting on the application: answer `session.pending` with respond() or approve(), then call events() again. */
+  | { kind: "requires_action"; requests: ToolRequest[] }
   /** The upstream session ended without a result (cancelled, deleted, or terminated). */
   | { kind: "terminated" }
   /** stop() was called; the upstream session was interrupted and cleaned up. */
@@ -34,6 +99,17 @@ export type Spend =
   | { kind: "tokens_delta"; usage: TokenUsage }
   | { kind: "tokens_total"; usage: TokenUsage };
 
+/** Something the hosted agent needs from the application before it can continue. */
+export interface ToolRequest {
+  id: string;
+  /** "tool": run it and respond(); "approval": approve() or deny it. */
+  kind: "tool" | "approval";
+  name: string;
+  input: unknown;
+  /** Provider-specific correlation the provider needs to route the answer (OpenAI turn id, ...). */
+  handle?: unknown;
+}
+
 export interface RawEvent {
   type: string;
   payload: Record<string, unknown>;
@@ -48,6 +124,8 @@ export interface Translation {
   spend?: Spend;
   /** The provider should fetch the authoritative spend figure after this event. */
   pollSpend?: boolean;
+  /** Requests the application must answer; the session keeps them in `pending`. */
+  requests?: ToolRequest[];
   outcome: TranslationOutcome;
 }
 
@@ -63,38 +141,68 @@ export type SessionEvent =
       payload: { id: unknown; name?: unknown; is_error: boolean; content: unknown };
       upstreamId: string | null;
     }
+  /** The agent wants the application to run one of its `tools`; answer with `session.respond()`. */
+  | {
+      type: "tool.request";
+      payload: { id: string; name: string; input: unknown };
+      upstreamId: string | null;
+    }
+  /** The provider wants a human decision on a built-in tool call; answer with `session.approve()`. */
+  | {
+      type: "approval.request";
+      payload: { id: string; name: string; input: unknown };
+      upstreamId: string | null;
+    }
   | { type: "harness.event"; payload: Record<string, unknown>; upstreamId: string | null }
   | {
       type: "spend.updated";
       payload: { spent_usd: number; delta_usd: number; uncertain: boolean };
       upstreamId: null;
     }
+  /** The last event of every events() pass. `completed` means the turn is done and send() is allowed. */
   | {
       type: "session.ended";
       payload: { outcome: Outcome; spent_usd: number; uncertain: boolean };
       upstreamId: null;
     };
 
-/** Everything needed to find the hosted session again from another process. */
+/**
+ * Everything needed to find the hosted session again from another process. Gemini sessions are
+ * chains of interactions, so `sessionId` moves forward on every send() or respond(); persist the
+ * ref after each pass.
+ */
 export interface SessionRef {
-  provider: ProviderName;
+  provider: string;
   sessionId: string;
   agentId: string;
   environmentId: string | null;
 }
 
+export interface Artifact {
+  id: string;
+  path: string;
+  sizeBytes: number | null;
+}
+
+export interface AgentRefRecord {
+  agentId: string;
+  environmentId: string | null;
+  /** Provider-specific extras created alongside the agent (Anthropic vault id, ...). */
+  extra?: Record<string, string>;
+}
+
 /** Caches the provider-side agent object per definition so sessions do not create one each. */
 export interface AgentStore {
-  get(key: string): Promise<{ agentId: string; environmentId: string | null } | null>;
-  set(key: string, ref: { agentId: string; environmentId: string | null }): Promise<void>;
+  get(key: string): Promise<AgentRefRecord | null>;
+  set(key: string, ref: AgentRefRecord): Promise<void>;
 }
 
 export class MemoryStore implements AgentStore {
-  private readonly refs = new Map<string, { agentId: string; environmentId: string | null }>();
+  private readonly refs = new Map<string, AgentRefRecord>();
   async get(key: string) {
     return this.refs.get(key) ?? null;
   }
-  async set(key: string, ref: { agentId: string; environmentId: string | null }) {
+  async set(key: string, ref: AgentRefRecord) {
     this.refs.set(key, ref);
   }
 }
@@ -106,7 +214,7 @@ export class MemoryStore implements AgentStore {
  */
 export class FileStore implements AgentStore {
   constructor(private readonly path: string) {}
-  private async read(): Promise<Record<string, { agentId: string; environmentId: string | null }>> {
+  private async read(): Promise<Record<string, AgentRefRecord>> {
     const { readFile } = await import("node:fs/promises");
     try {
       return JSON.parse(await readFile(this.path, "utf8"));
@@ -117,7 +225,7 @@ export class FileStore implements AgentStore {
   async get(key: string) {
     return (await this.read())[key] ?? null;
   }
-  async set(key: string, ref: { agentId: string; environmentId: string | null }) {
+  async set(key: string, ref: AgentRefRecord) {
     const { mkdir, writeFile } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
     const all = await this.read();
@@ -127,10 +235,30 @@ export class FileStore implements AgentStore {
   }
 }
 
+export class UnsupportedError extends Error {
+  constructor(
+    readonly provider: string,
+    readonly features: string[],
+  ) {
+    super(`${provider} does not support: ${features.join(", ")}`);
+    this.name = "UnsupportedError";
+  }
+}
+
 export const CONTINUE: TranslationOutcome = { kind: "continue" };
 
 export function skip(upstreamId: string | null = null): Translation {
   return { upstreamId, events: [], outcome: CONTINUE };
+}
+
+/** A replayed event from an earlier turn: transcript only, no outcome, no requests, no polling. */
+export function stale(translation: Translation): Translation {
+  return {
+    upstreamId: translation.upstreamId,
+    events: translation.events,
+    spend: translation.spend,
+    outcome: CONTINUE,
+  };
 }
 
 const PREVIEW_CHARS = 4_000;
@@ -156,4 +284,10 @@ export function str(value: unknown): string | null {
 
 export function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** Tool results travel as text; objects are serialized, strings pass through. */
+export function resultText(output: unknown): string {
+  if (output === undefined || output === null) return "";
+  return typeof output === "string" ? output : JSON.stringify(output);
 }

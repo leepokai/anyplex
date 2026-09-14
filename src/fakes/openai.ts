@@ -1,50 +1,65 @@
-// Fake OpenAI Agents API upstream (public beta 2026-09-10) so sessions can be exercised
-// without a key. Shapes follow the `openai` SDK: /agents, /agents/sessions, session
-// events (POST input, GET SSE stream), items and turns lists. Point a BYOK key's base_url at
-// `${url}/v1`.
+// Fake OpenAI Agents API upstream (public beta 2026-09-10): /agents, /agents/sessions, session
+// events (POST input, GET SSE stream), items, turns, artifacts. Point a BYOK base URL at
+// `${url}/v1`. Quirks follow live traffic of 2026-09-13: turn events carry `usage: null` and
+// usage lands on the turn and session objects later; deleting a session whose turn is still
+// cancelling is refused.
 
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createTimeline, type FakeServer, fakeId, sleep, type Timeline } from "./timeline.ts";
 
-export interface FakeOpenAIAgentsOptions {
+export interface FakeOpenAIOptions {
   /** Pause between session events. Default 30. */
   eventDelayMs?: number;
-  /** Token usage reported on the turn. Defaults 1000 / 200 / 0 cached. */
+  /** Token usage reported per turn. Defaults 1000 / 200 / 0 cached. */
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
   /** Command executions per turn. Default 1. */
   toolCalls?: number;
+  /** Name of a function (client) tool the agent calls once in its first turn. */
+  functionTool?: string;
+  /** How long after a turn completes before usage appears on the turn (half) and session (full). Default 0. */
+  usageDelayMs?: number;
+  /** Refuse DELETE while a turn is in progress, like the live API. Default true. */
+  refuseDeleteWhileInProgress?: boolean;
 }
 
 export interface FakeOpenAISession {
   id: string;
   agentId: string;
+  environment: Record<string, unknown>;
   status: "in_progress" | "idle" | "failed" | "requires_action";
   items: Record<string, unknown>[];
   turns: Record<string, unknown>[];
-  usage: Record<string, unknown> | null;
+  turnUsage: Map<string, Record<string, unknown>>;
+  usageAvailableAt: number;
+  turnCount: number;
+  requiredActions: Record<string, unknown>[];
+  pendingTool: { callId: string; turnId: string; output: string | null } | null;
+  artifacts: { id: string; path: string; bytes: Uint8Array; turnId: string }[];
   cancelled: boolean;
   deleted: boolean;
   timeline: Timeline<Record<string, unknown>>;
 }
 
-export interface FakeOpenAIAgentsState {
+export interface FakeOpenAIState {
   agents: Record<string, unknown>[];
   sessions: Map<string, FakeOpenAISession>;
 }
 
 const epoch = () => Math.floor(Date.now() / 1000);
 
-export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
+export function createFakeOpenAI(options: FakeOpenAIOptions = {}) {
   const eventDelayMs = options.eventDelayMs ?? 30;
   const inputTokens = options.inputTokens ?? 1_000;
   const outputTokens = options.outputTokens ?? 200;
   const cachedTokens = options.cachedTokens ?? 0;
   const toolCalls = options.toolCalls ?? 1;
-  const state: FakeOpenAIAgentsState = { agents: [], sessions: new Map() };
+  const usageDelayMs = options.usageDelayMs ?? 0;
+  const refuseDelete = options.refuseDeleteWhileInProgress ?? true;
+  const state: FakeOpenAIState = { agents: [], sessions: new Map() };
   const app = new Hono();
 
   app.use("*", async (c, next) => {
@@ -64,12 +79,23 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
     await next();
   });
 
-  const usageJson = () => ({
-    input_tokens: inputTokens,
-    input_tokens_details: { cached_tokens: cachedTokens },
-    output_tokens: outputTokens,
+  const usageJson = (turns: number) => ({
+    input_tokens: inputTokens * turns,
+    input_tokens_details: { cached_tokens: cachedTokens * turns },
+    output_tokens: outputTokens * turns,
     output_tokens_details: { reasoning_tokens: 0 },
-    total_tokens: inputTokens + outputTokens,
+    total_tokens: (inputTokens + outputTokens) * turns,
+  });
+  const sessionUsage = (session: FakeOpenAISession) =>
+    session.turnCount > 0 && Date.now() >= session.usageAvailableAt
+      ? usageJson(session.turnCount)
+      : null;
+  const turnJson = (session: FakeOpenAISession, turn: Record<string, unknown>) => ({
+    ...turn,
+    usage:
+      turn.status === "completed" && Date.now() >= session.usageAvailableAt - usageDelayMs / 2
+        ? usageJson(1)
+        : null,
   });
   const sessionJson = (session: FakeOpenAISession) => ({
     id: session.id,
@@ -77,12 +103,12 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
     agent: { id: session.agentId, version: 1 },
     created_at: epoch(),
     last_active_at: epoch(),
-    environment: { type: "openai_hosted" },
+    environment: { id: `ccarenv_${session.id}`, ...session.environment },
     error: null,
     metadata: {},
-    required_actions: [],
+    required_actions: session.requiredActions,
     status: session.status,
-    usage: session.usage,
+    usage: sessionUsage(session),
     vault_ids: [],
   });
   const findSession = (id: string) => {
@@ -101,12 +127,16 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
       },
       404,
     );
+  const waitFor = async (session: FakeOpenAISession, ready: () => boolean) => {
+    for (let i = 0; i < 6000 && !ready() && !session.cancelled; i += 1) await sleep(20);
+  };
 
   const runTurn = async (session: FakeOpenAISession) => {
     const emit = async (type: string, data: Record<string, unknown>) => {
       session.timeline.push({ type, event_id: fakeId("evt"), ...data });
       await sleep(eventDelayMs);
     };
+    const turnNo = ++session.turnCount;
     const turn: Record<string, unknown> = {
       id: fakeId("turn"),
       object: "agent.session.turn",
@@ -142,22 +172,55 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
       turn_id: turn.id,
       content: [{ type: "output_text", text }],
     });
-    await item(message("(fake openai agent) starting the task", "commentary"));
+    await item(message(`(fake openai agent) turn ${turnNo} starting`, "commentary"));
+    if (options.functionTool && turnNo === 1) {
+      const callId = fakeId("call");
+      session.pendingTool = { callId, turnId: turn.id as string, output: null };
+      await item({
+        id: fakeId("fc"),
+        type: "function_call",
+        status: "in_progress",
+        turn_id: turn.id,
+        call_id: callId,
+        name: options.functionTool,
+        arguments: JSON.stringify({ query: "fake" }),
+      });
+      session.status = "requires_action";
+      session.requiredActions = [
+        {
+          type: "function_call",
+          call_id: callId,
+          name: options.functionTool,
+          arguments: { query: "fake" },
+          turn_id: turn.id,
+        },
+      ];
+      await emit("agent.session.requires_action", { session: sessionJson(session) });
+      await waitFor(session, () => session.pendingTool?.output !== null);
+      if (session.cancelled) return finishCancelled();
+      session.status = "in_progress";
+      session.requiredActions = [];
+      await emit("agent.session.in_progress", { session: sessionJson(session) });
+      await item(
+        message(`(fake openai agent) tool said: ${session.pendingTool?.output}`, "commentary"),
+      );
+      session.pendingTool = null;
+    }
     for (let step = 1; step <= toolCalls; step += 1) {
       if (session.cancelled) break;
       await item({
-        id: fakeId("cmd"),
+        id: `exec-${fakeId("cmd")}`,
         type: "command_execution",
         status: "completed",
         turn_id: turn.id,
-        command: `echo step ${step}`,
+        command: `/bin/bash -lc 'echo turn ${turnNo} step ${step}'`,
         cwd: "/workspace",
         exit_code: 0,
         duration_ms: 5,
-        output: `step ${step}\n`,
+        output: `turn ${turnNo} step ${step}\n`,
       });
     }
-    if (session.cancelled) {
+    async function finishCancelled() {
       turn.status = "cancelled";
       turn.completed_at = epoch();
       await emit("agent.session.turn.cancelled", {
@@ -168,23 +231,27 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
       });
       session.status = "idle";
       await emit("agent.session.idle", { session: sessionJson(session) });
-      session.timeline.finish();
-      return;
     }
-    await item(message("(fake openai agent) done", "final_answer"));
+    if (session.cancelled) return finishCancelled();
+    await item(message(`(fake openai agent) turn ${turnNo} done`, "final_answer"));
+    session.artifacts.push({
+      id: fakeId("artifact"),
+      path: `/workspace/outputs/result-${turnNo}.txt`,
+      bytes: new TextEncoder().encode(`turn ${turnNo} output\n`),
+      turnId: turn.id as string,
+    });
     turn.status = "completed";
-    turn.usage = usageJson();
     turn.completed_at = epoch();
-    session.usage = usageJson();
+    // Like the live API: the turn event says usage: null; the objects fill in later.
+    session.usageAvailableAt = Date.now() + usageDelayMs;
     await emit("agent.session.turn.completed", {
       session_id: session.id,
       turn,
       turn_id: turn.id,
-      usage: usageJson(),
+      usage: null,
     });
     session.status = "idle";
     await emit("agent.session.idle", { session: sessionJson(session) });
-    session.timeline.finish();
   };
 
   app.post("/v1/agents", async (c) => {
@@ -193,11 +260,9 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
       id: fakeId("agent"),
       object: "agent",
       created_at: epoch(),
-      model: body.model ?? "gpt-fake",
-      instructions: body.instructions ?? null,
-      name: body.name ?? null,
       metadata: {},
       tools: [],
+      ...body,
     };
     state.agents.push(agent);
     return c.json(agent);
@@ -208,16 +273,37 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
     const session: FakeOpenAISession = {
       id: fakeId("sess"),
       agentId: typeof body.agent_id === "string" ? body.agent_id : "agent_unknown",
+      environment: (body.environment as Record<string, unknown>) ?? { type: "none" },
       status: "idle",
       items: [],
       turns: [],
-      usage: null,
+      turnUsage: new Map(),
+      usageAvailableAt: Number.POSITIVE_INFINITY,
+      turnCount: 0,
+      requiredActions: [],
+      pendingTool: null,
+      artifacts: [],
       cancelled: false,
       deleted: false,
       timeline: createTimeline(),
     };
     state.sessions.set(session.id, session);
-    if (body.input) void runTurn(session);
+    if (body.input) {
+      const input = Array.isArray(body.input)
+        ? body.input
+        : [{ role: "user", content: [{ type: "input_text", text: String(body.input) }] }];
+      for (const message of input as Record<string, unknown>[])
+        session.items.push({
+          id: fakeId("msg"),
+          type: "message",
+          role: "user",
+          status: "completed",
+          phase: null,
+          turn_id: null,
+          content: message.content,
+        });
+      void runTurn(session);
+    }
     return c.json(sessionJson(session));
   });
 
@@ -229,6 +315,18 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
   app.delete("/v1/agents/sessions/:id", (c) => {
     const session = findSession(c.req.param("id"));
     if (!session) return notFound(c);
+    if (refuseDelete && session.status === "in_progress")
+      return c.json(
+        {
+          error: {
+            message: "Cannot delete a session with an active turn",
+            type: "invalid_request_error",
+            code: "session_active",
+            param: null,
+          },
+        },
+        400,
+      );
     session.deleted = true;
     session.cancelled = true;
     session.timeline.finish();
@@ -238,15 +336,25 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
   app.post("/v1/agents/sessions/:id/events", async (c) => {
     const session = findSession(c.req.param("id"));
     if (!session) return notFound(c);
-    const body = (await c.req.json().catch(() => ({}))) as { events?: { type?: string }[] };
+    const body = (await c.req.json().catch(() => ({}))) as { events?: Record<string, unknown>[] };
     for (const event of body.events ?? []) {
-      if (
-        event.type === "agent.session.input.message" &&
-        session.status === "idle" &&
-        !session.timeline.done
-      )
+      if (event.type === "agent.session.input.message" && session.status === "idle") {
+        for (const message of (event.input as Record<string, unknown>[]) ?? [])
+          session.items.push({
+            id: fakeId("msg"),
+            type: "message",
+            role: "user",
+            status: "completed",
+            phase: null,
+            turn_id: null,
+            content: message.content,
+          });
         void runTurn(session);
+      }
       if (event.type === "agent.session.input.cancel") session.cancelled = true;
+      const tool = session.pendingTool;
+      if (tool && event.type === "agent.session.input.tool_result" && tool.callId === event.call_id)
+        tool.output = String(event.error ?? event.output ?? "");
     }
     return c.json({});
   });
@@ -268,7 +376,13 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
 
   app.get("/v1/agents/sessions/:id/turns", (c) => {
     const session = findSession(c.req.param("id"));
-    return session ? c.json({ object: "list", data: session.turns, has_more: false }) : notFound(c);
+    return session
+      ? c.json({
+          object: "list",
+          data: session.turns.map((turn) => turnJson(session, turn)),
+          has_more: false,
+        })
+      : notFound(c);
   });
 
   app.get("/v1/agents/sessions/:id/items", (c) => {
@@ -276,13 +390,41 @@ export function createFakeOpenAIAgents(options: FakeOpenAIAgentsOptions = {}) {
     return session ? c.json({ object: "list", data: session.items, has_more: false }) : notFound(c);
   });
 
+  app.get("/v1/agents/sessions/:id/artifacts", (c) => {
+    const session = findSession(c.req.param("id"));
+    if (!session) return notFound(c);
+    return c.json({
+      object: "list",
+      data: session.artifacts.map((artifact) => ({
+        id: artifact.id,
+        object: "agent.session.artifact",
+        created_at: epoch(),
+        environment_id: `ccarenv_${session.id}`,
+        path: artifact.path,
+        session_id: session.id,
+        size_bytes: artifact.bytes.byteLength,
+        turn_id: artifact.turnId,
+      })),
+      has_more: false,
+    });
+  });
+
+  app.get("/v1/agents/sessions/:id/artifacts/:artifactId/content", (c) => {
+    const session = findSession(c.req.param("id"));
+    const artifact = session?.artifacts.find((a) => a.id === c.req.param("artifactId"));
+    if (!artifact) return notFound(c);
+    return c.body(artifact.bytes as unknown as ArrayBuffer, 200, {
+      "content-type": "application/octet-stream",
+    });
+  });
+
   return { app, state };
 }
 
 export async function startFakeOpenAI(
-  options: FakeOpenAIAgentsOptions = {},
-): Promise<FakeServer<FakeOpenAIAgentsState>> {
-  const { app, state } = createFakeOpenAIAgents(options);
+  options: FakeOpenAIOptions = {},
+): Promise<FakeServer<FakeOpenAIState>> {
+  const { app, state } = createFakeOpenAI(options);
   const server = serve({ fetch: app.fetch, port: 0 });
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   return {

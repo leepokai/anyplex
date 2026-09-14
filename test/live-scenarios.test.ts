@@ -7,6 +7,7 @@ import OpenAI from "openai";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   anyplex,
+  capabilities,
   MemoryStore,
   type ProviderName,
   type SessionEvent,
@@ -276,6 +277,108 @@ function scenarios(provider: ProviderName) {
       );
     });
 
+    it("runs a second turn on the same session", { timeout }, async () => {
+      const session = await client().start({
+        prompt: "Run `echo one` as a shell command, then reply done.",
+        budgetUsd: 1,
+      });
+      const first = await collect(session.events());
+      expect(outcomeOf(first)).toEqual({ kind: "completed" });
+      const firstId = session.ref.sessionId;
+      await session.send("Now run `echo two` as a shell command, then reply done.");
+      const second = await collect(session.events());
+      expect(outcomeOf(second)).toEqual({ kind: "completed" });
+      const calls = [...ids(first, "tool.call"), ...ids(second, "tool.call")];
+      expect(new Set(calls).size).toBeGreaterThanOrEqual(2);
+      note(
+        `${provider}: second turn ok: ${first.length} + ${second.length} events, ${new Set(calls).size} distinct tool calls, spend $${session.spentUsd}${session.uncertain ? " (est)" : ""}${provider === "google" ? `, interaction ${firstId.slice(-6)} -> ${session.ref.sessionId.slice(-6)}` : ""}`,
+      );
+    });
+
+    it("hands a client tool to the application and continues after respond()", {
+      timeout,
+    }, async () => {
+      const withTool = anyplex({
+        provider,
+        apiKey,
+        model,
+        instructions:
+          "You are a terse assistant. To answer weather questions you must call the `weather` tool and then report its result verbatim.",
+        tools: [
+          {
+            name: "weather",
+            description: "Current weather for a city.",
+            parameters: {
+              type: "object",
+              properties: { city: { type: "string" } },
+              required: ["city"],
+            },
+          },
+        ],
+        store,
+      });
+      const session = await withTool.start({
+        prompt: "What is the weather in Taipei right now?",
+        budgetUsd: 1,
+      });
+      const first = await collect(session.events());
+      const outcome = outcomeOf(first);
+      note(
+        `${provider}: tool pass 1 -> ${JSON.stringify(outcome)} pending=${JSON.stringify(session.pending.map((r) => ({ name: r.name, input: r.input })))}`,
+      );
+      expect(outcome?.kind).toBe("requires_action");
+      const request = session.pending[0];
+      expect(request?.name).toBe("weather");
+      await session.respond(request?.id as string, {
+        output: { city: "Taipei", temperatureC: 27, sky: "clear" },
+      });
+      const rest = await collect(session.events());
+      const text = rest
+        .filter((e) => e.type === "message.delta")
+        .map((e) => (e.payload as { text: string }).text)
+        .join(" ");
+      note(
+        `${provider}: tool pass 2 -> ${JSON.stringify(outcomeOf(rest))}, text=${JSON.stringify(text.slice(0, 120))}, spend $${session.spentUsd}${session.uncertain ? " (est)" : ""}`,
+      );
+      expect(outcomeOf(rest)).toEqual({ kind: "completed" });
+      expect(text).toMatch(/27/);
+    });
+
+    it("mounts a file and lists the artifacts the agent produced", { timeout }, async () => {
+      const withFile = anyplex({
+        provider,
+        apiKey,
+        model,
+        instructions: INSTRUCTIONS,
+        environment: {
+          files: [{ path: "/workspace/notes.md", content: "The secret word is pomelo.\n" }],
+        },
+        store,
+      });
+      const session = await withFile.start({
+        prompt: `Read /workspace/notes.md, then write the secret word into ${capabilities(provider).artifactsDirectory ?? "/workspace/outputs"}/secret.txt (create the directory) using shell commands, then reply with the secret word.`,
+        budgetUsd: 1,
+      });
+      const events = await collect(session.events());
+      const text = events
+        .filter((e) => e.type === "message.delta")
+        .map((e) => (e.payload as { text: string }).text)
+        .join(" ");
+      let artifacts: { id: string; path: string; sizeBytes: number | null }[] = [];
+      let read = "";
+      try {
+        artifacts = await session.artifacts();
+        const hit = artifacts.find((a) => /secret/.test(a.path)) ?? artifacts[0];
+        if (hit && capabilities(provider).artifactsRead === "native")
+          read = new TextDecoder().decode(await session.readArtifact(hit)).slice(0, 80);
+      } catch (err) {
+        read = `error ${(err as Error).message.slice(0, 100)}`;
+      }
+      note(
+        `${provider}: file+artifacts -> ${JSON.stringify(outcomeOf(events))}, mentions pomelo=${/pomelo/i.test(text)}, artifacts=${JSON.stringify(artifacts.map((a) => a.path))}, read=${JSON.stringify(read)}`,
+      );
+      expect(outcomeOf(events)).toEqual({ kind: "completed" });
+    });
     it.skipIf(provider === "openai")(
       "two concurrent sessions share one agent",
       { timeout },
