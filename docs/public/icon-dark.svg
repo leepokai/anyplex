@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke-linecap="round" role="img" aria-labelledby="title">
+  <title id="title">anyplex: four strands converge into one hub and leave as one line</title>
+  <g id="strands" stroke="#F8FAFC" stroke-width="24">
+    <path d="M24 50 Q88 50 118 128"/>
+    <path d="M24 102 Q88 102 118 128"/>
+    <path d="M24 154 Q88 154 118 128"/>
+    <path d="M24 206 Q88 206 118 128"/>
+  </g>
+  <path id="out" d="M118 128 H228" stroke="#3B82F6" stroke-width="36"/>
+  <circle id="hub" cx="118" cy="128" r="44" fill="#3B82F6"/>
+</svg>

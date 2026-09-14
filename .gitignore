@@ -8,3 +8,10 @@ coverage/
 
 examples/.resume.json
 examples/.agents.json
+
+# Local mirror of the vendors' documentation (their copyright); rebuild with `pnpm docs:vendor`.
+vendor-docs/
+
+# VitePress site output and cache (pnpm docs:build / docs:dev)
+docs/.vitepress/cache/
+docs/.vitepress/dist/

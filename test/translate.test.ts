@@ -12,6 +12,34 @@ describe("anthropic", () => {
     expect(parseListCostUsd({ amount: "0.42", currency: "USD" })).toBe(0.42);
     expect(parseListCostUsd(null)).toBeNull();
   });
+  it("follows a retrying session.error and names MCP results by mcp_tool_use_id", () => {
+    const retrying = translateAnthropic({
+      id: "e1",
+      type: "session.error",
+      error: {
+        type: "model_error",
+        message: "upstream hiccup",
+        retry_status: { type: "retrying" },
+      },
+    });
+    expect(retrying.outcome).toEqual({ kind: "continue" });
+    expect(retrying.events[0]?.payload).toMatchObject({ retry_status: "retrying" });
+    expect(
+      translateAnthropic({
+        id: "e2",
+        type: "session.error",
+        error: { type: "billing_error", message: "no credits", retry_status: { type: "terminal" } },
+      }).outcome,
+    ).toEqual({ kind: "failed", error: "no credits", code: "billing_error" });
+    expect(
+      translateAnthropic({
+        id: "e3",
+        type: "agent.mcp_tool_result",
+        mcp_tool_use_id: "m1",
+        content: [],
+      }).events[0]?.payload,
+    ).toMatchObject({ id: "m1" });
+  });
   it("maps messages, tools, usage, and idle reasons", () => {
     const message = translateAnthropic({
       id: "sevt_1",
@@ -101,6 +129,27 @@ describe("openai", () => {
     expect(
       translateOpenAI({ type: "agent.session.idle", event_id: "e", session: { id: "sess_1" } }),
     ).toMatchObject({ upstreamId: "sess_1:idle", outcome: { kind: "completed" } });
+    // A function_call item alone does not establish a pending result; required_actions does,
+    // and each wait gets its own id so a second one in the same session is not deduped.
+    expect(
+      translateOpenAI({
+        type: "agent.session.turn.item.added",
+        event_id: "e4",
+        item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "f", arguments: "{}" },
+      }).requests,
+    ).toBeUndefined();
+    const waiting = translateOpenAI({
+      type: "agent.session.requires_action",
+      event_id: "e5",
+      session: {
+        id: "sess_1",
+        required_actions: [
+          { type: "function_call", call_id: "call_1", name: "f", arguments: "{}" },
+        ],
+      },
+    });
+    expect(waiting.upstreamId).toBe("sess_1:requires_action:call_1");
+    expect(waiting.requests?.map((r) => r.id)).toEqual(["call_1"]);
     expect(
       translateOpenAI({
         type: "agent.session.turn.failed",

@@ -30,7 +30,13 @@ anyplex/
 │   └── live-scenarios.test.ts  Opt-in lifecycle scenarios against the real vendors
 ├── examples/                   Runnable scripts (pnpm example examples/<name>.ts)
 ├── assets/                     Project mark: icon.svg (light), icon-dark.svg, rendered PNGs
-├── docs/                       This folder: structure, architecture, conventions, gateway-readiness (relay plan)
+├── scripts/
+│   ├── vendor-docs.mjs         Mirrors the vendors' managed-agent docs into vendor-docs/ (pnpm docs:vendor)
+│   └── docs-search.mjs         MiniSearch over docs/ and the mirror from the shell (pnpm docs:search)
+├── docs/.vitepress/config.mts  VitePress site over docs/ and the mirror (pnpm docs:dev / docs:build)
+├── docs/index.md               Site home page
+├── vendor-docs/                Ignored by git: the mirror, one folder per provider with an INDEX.md
+├── docs/                       This folder: structure, architecture, conventions, gateway-readiness (relay plan), vendor-docs (doc mirror), vendor-gaps (unmapped vendor features)
 ├── .github/workflows/ci.yml    install, check, lint, test, build on push and pull request
 ├── package.json                exports "." and "./fakes"; vendor SDKs are dependencies, hono is an optional peer
 ├── tsconfig.json / tsconfig.build.json   Type-check everything; emit `dist/` from `src/` only

@@ -24,6 +24,21 @@
   tokens.
 - `docs/gateway-readiness.md`: the compatibility promise and the additive plan for building a
   LiteLLM-style relay on top of the package.
+- Documentation system: `pnpm docs:vendor` mirrors the four vendors' managed-agent docs into
+  the ignored `vendor-docs/` (llms.txt indexes, Markdown twins, front matter with source and
+  hash, an `INDEX.md` per vendor); `pnpm docs:search` is a MiniSearch CLI over the project docs
+  and the mirror; `pnpm docs:dev` / `docs:build` serve a VitePress site with a sidebar per
+  vendor and local full-text search. `docs/vendor-gaps.md` lists what the mirrored docs
+  describe that anyplex does not map yet.
+- Fixes from reading the mirrored docs end to end: Anthropic `agent.mcp_tool_result` is named
+  by `mcp_tool_use_id` (MCP results were uncorrelated); Anthropic `session.error` with
+  `retry_status: retrying` no longer ends the pass; OpenAI function-call requests come only
+  from `required_actions`, and a second `requires_action` in one session is no longer deduped
+  away; Gemini keeps its built-in tools when the application declares tools or MCP servers
+  (passing `tools` replaces the defaults), buffers streamed `arguments_delta` chunks into one
+  request, injects repository tokens as Basic auth through the network allowlist
+  (`repositoryAuth` is now native), and reports `incomplete` with a code; Cursor
+  `providerOptions` now take precedence and `model.params` merges onto the model id.
 
 ## 0.2.0 (2026-09-14)
 

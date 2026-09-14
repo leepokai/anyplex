@@ -46,7 +46,12 @@
     "prepublishOnly": "pnpm check && pnpm test && pnpm build",
     "e2e": "vitest run test/session.test.ts",
     "e2e:live": "ANYPLEX_LIVE=${ANYPLEX_LIVE:-anthropic,openai,google} vitest run test/live.test.ts test/live-scenarios.test.ts",
-    "example": "tsx"
+    "example": "tsx",
+    "docs:vendor": "node scripts/vendor-docs.mjs",
+    "docs:search": "node scripts/docs-search.mjs",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "keywords": [
     "agents",
@@ -82,8 +87,10 @@
     "@hono/node-server": "^2.1.1",
     "@types/node": "^26.2.0",
     "hono": "^4.13.3",
+    "minisearch": "^7.2.0",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11",
-    "tsx": "^4.23.12"
+    "vitepress": "^1.6.4",
+    "vitest": "^4.1.11"
   }
 }

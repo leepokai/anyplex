@@ -215,13 +215,11 @@ export function translateOpenAI(raw: unknown): Translation {
         outcome: { kind: "terminated" },
       });
     }
-    case "agent.session.turn.item.added": {
-      // A function call is announced before it completes; the request is actionable right away.
-      const item = record(ev.item);
-      if (item?.type !== "function_call") return skip(eventId);
-      const { events, requests } = itemEvents(item);
-      return done(`${str(item.id) ?? eventId}:added`, events, requests ? { requests } : {});
-    }
+    case "agent.session.turn.item.added":
+      // A function_call item alone "does not establish that a result is pending"
+      // (guides/agents-api/tools/functions.md); `required_actions` on the requires_action
+      // event is the only source of requests. The item is announced again as `item.done`.
+      return skip(eventId);
     case "agent.session.idle":
     case "agent.session.requires_action":
     case "agent.session.failed": {
@@ -256,8 +254,9 @@ export function translateOpenAI(raw: unknown): Translation {
             input: parseArguments(action.arguments),
             handle: { turnId: action.turn_id ?? null },
           }));
+        // One session can wait on the application several times; the id must differ each time.
         return done(
-          key,
+          `${key}:${requests.map((r) => r.id).join(",")}`,
           [
             ...events,
             ...requests.map((r) => ({

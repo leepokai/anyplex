@@ -20,6 +20,10 @@ export interface FakeAnthropicOptions {
   customTool?: string;
   /** The first built-in tool call asks for confirmation (`evaluated_permission: "ask"`). */
   askPermission?: boolean;
+  /** Emit one `session.error` with `retry_status: retrying` mid-turn, as the server does while it retries. */
+  retryingError?: boolean;
+  /** Name of an MCP tool the agent calls once per turn (`agent.mcp_tool_use` / `agent.mcp_tool_result`). */
+  mcpTool?: string;
 }
 
 export interface FakeManagedSession {
@@ -184,6 +188,29 @@ export function createFakeAnthropic(options: FakeAnthropicOptions = {}) {
       await emit("agent.tool_result", {
         tool_use_id: id,
         content: [{ type: "text", text: `turn ${turn} step ${step}\n` }],
+        is_error: false,
+      });
+      if (options.retryingError && step === 1)
+        await emit("session.error", {
+          error: {
+            type: "model_error",
+            message: "upstream model request failed; retrying",
+            retry_status: { type: "retrying" },
+          },
+        });
+    }
+    if (options.mcpTool) {
+      const id = `${session.id}_t${turn}_mcp`;
+      await emit("agent.mcp_tool_use", {
+        id,
+        name: options.mcpTool,
+        server_name: "docs",
+        input: { query: "fake" },
+      });
+      // The MCP result names its call `mcp_tool_use_id`, unlike `agent.tool_result`.
+      await emit("agent.mcp_tool_result", {
+        mcp_tool_use_id: id,
+        content: [{ type: "text", text: "mcp says hi" }],
         is_error: false,
       });
     }

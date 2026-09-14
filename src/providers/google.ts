@@ -42,7 +42,7 @@ export const googleCapabilities: Capabilities = {
   mcpHeaders: "native",
   files: "native",
   repositories: "native",
-  repositoryAuth: "unsupported",
+  repositoryAuth: "native",
   network: "native",
   packages: "unsupported",
   setupCommands: "unsupported",
@@ -67,8 +67,10 @@ export function googleTokenUsage(raw: unknown): TokenUsage | null {
 function statusOutcome(status: string): TranslationOutcome {
   const map: Record<string, Outcome> = {
     completed: { kind: "completed" },
-    failed: { kind: "failed", error: "interaction failed" },
-    incomplete: { kind: "failed", error: "interaction incomplete" },
+    failed: { kind: "failed", error: "interaction failed", code: "failed" },
+    // `incomplete` is "completed, but contains incomplete results, e.g. hitting max_tokens"
+    // (api/interactions.md); a token budget set through providerOptions ends this way too.
+    incomplete: { kind: "failed", error: "interaction incomplete", code: "incomplete" },
     cancelled: { kind: "terminated" },
     budget_exceeded: { kind: "budget_exceeded" },
     requires_action: { kind: "requires_action", requests: [] },
@@ -179,7 +181,8 @@ function stepDelta(
         ],
       };
     case "arguments_delta":
-      // ponytail: one chunk per call assumed (as observed); multi-chunk arguments would need buffering.
+      // `follow` buffers the chunks of one call and emits a single delta with the whole
+      // arguments (docs/streaming.md: "Must be accumulated across deltas").
       return functionRequest(
         step ?? { id, name: "function" },
         parseArguments(delta.arguments),
@@ -288,14 +291,30 @@ function baseEnvironment(env: ProviderContext["definition"]["environment"]) {
       ...(repo.path ? { target: repo.path } : {}),
     })),
   ];
-  const network =
-    env.network === undefined
-      ? undefined
+  // A private repository is fetched with Basic auth injected by the network allowlist
+  // (docs/agent-environment.md "Private sources": `x-oauth-basic:<token>`, base64).
+  const authHosts = (env.repositories ?? [])
+    .filter((repo) => repo.token)
+    .map((repo) => ({
+      domain: new URL(repo.url).hostname,
+      transform: {
+        Authorization: `Basic ${Buffer.from(`x-oauth-basic:${repo.token}`).toString("base64")}`,
+      },
+    }));
+  const allowlist =
+    env.network === undefined || env.network === "unrestricted"
+      ? [{ domain: "*" }]
       : env.network === "none"
-        ? ("disabled" as const)
-        : env.network === "unrestricted"
-          ? { allowlist: [{ domain: "*" }] }
-          : { allowlist: env.network.allowedHosts.map((domain) => ({ domain })) };
+        ? null
+        : env.network.allowedHosts.map((domain) => ({ domain }));
+  const network =
+    allowlist === null
+      ? ("disabled" as const)
+      : authHosts.length
+        ? { allowlist: [...authHosts, ...allowlist] }
+        : env.network === undefined
+          ? undefined
+          : { allowlist };
   if (!sources.length && network === undefined) return undefined;
   return {
     type: "remote" as const,
@@ -358,9 +377,15 @@ export const google: Provider = {
       base_agent: BASE_AGENT,
       system_instruction: d.instructions,
       agent_config: { type: "antigravity" as const, model: d.model },
+      // Passing `tools` replaces the agent's defaults (docs/custom-agents.md: "By default, the
+      // Antigravity agent has access to code_execution, google_search, and url_context. You can
+      // override this list"), so the built-ins are restated ahead of the application's tools.
       ...(d.tools.length || d.mcpServers.length
         ? {
             tools: [
+              { type: "code_execution" as const },
+              { type: "google_search" as const },
+              { type: "url_context" as const },
               ...d.tools.map((tool) => ({
                 type: "function" as const,
                 name: tool.name,
@@ -414,12 +439,46 @@ export const google: Provider = {
     const cancel = () => void stream.cancel().catch(ignore);
     signal.addEventListener("abort", cancel, { once: true });
     const starts = new Map<number, Record<string, unknown>>();
+    // Function-call arguments stream as `arguments_delta` chunks that "must be accumulated
+    // across deltas" (docs/streaming.md); one event with the whole arguments is emitted at the
+    // step's end, stamped with the first chunk's ordinal so replays dedupe.
+    const argBuffers = new Map<number, { ordinal: number; parts: unknown[] }>();
+    const flushArgs = (only: number | null): Record<string, unknown>[] => {
+      const out: Record<string, unknown>[] = [];
+      for (const [i, buffer] of [...argBuffers]) {
+        if (only !== null && i !== only) continue;
+        argBuffers.delete(i);
+        const args = buffer.parts.every((part) => typeof part === "string")
+          ? buffer.parts.join("")
+          : Object.assign({}, ...buffer.parts.map((part) => record(part) ?? {}));
+        out.push({
+          event_type: "step.delta",
+          event_id: `${ref.sessionId}:${buffer.ordinal}`,
+          index: i,
+          ...(starts.get(i) ? { step: starts.get(i) } : {}),
+          delta: { type: "arguments_delta", arguments: args },
+        });
+      }
+      return out;
+    };
     let ordinal = 0;
     let terminal = false;
     try {
       for await (const raw of stream) {
         const event = raw as unknown as Record<string, unknown>;
         ordinal += 1;
+        const index = typeof event.index === "number" ? event.index : null;
+        const delta = record(event.delta);
+        if (
+          event.event_type === "step.delta" &&
+          delta?.type === "arguments_delta" &&
+          index !== null
+        ) {
+          const buffer = argBuffers.get(index) ?? { ordinal, parts: [] };
+          buffer.parts.push(delta.arguments);
+          argBuffers.set(index, buffer);
+          continue;
+        }
         if (
           event.event_type === "interaction.completed" ||
           event.event_type === "error" ||
@@ -427,10 +486,17 @@ export const google: Provider = {
             statusOutcome(str(event.status) ?? "").kind !== "continue")
         )
           terminal = true;
-        const index = typeof event.index === "number" ? event.index : null;
         const step = record(event.step);
         if (event.event_type === "step.start" && index !== null && step) starts.set(index, step);
         const known = step ?? (index === null ? null : (starts.get(index) ?? null));
+        // A call's arguments are complete when its step stops, another step starts, or the
+        // interaction settles.
+        for (const pending of flushArgs(
+          event.event_type === "step.stop" || terminal ? null : index === null ? null : -1,
+        ))
+          yield pending;
+        if (index !== null && event.event_type !== "step.stop")
+          for (const pending of flushArgs(index)) yield pending;
         yield {
           ...event,
           event_id:
@@ -440,6 +506,7 @@ export const google: Provider = {
           ...(known ? { step: known } : {}),
         };
       }
+      for (const pending of flushArgs(null)) yield pending;
       // A cancelled interaction replays without a terminal event (observed live); ask once.
       if (!terminal && !signal.aborted) {
         const final = await client(ctx).interactions.get(ref.sessionId);

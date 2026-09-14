@@ -361,14 +361,17 @@ export const cursor: Provider = {
     // A client-chosen id makes the create idempotent; Cursor refuses it next to `envVars`.
     const agentId = "envVars" in options ? null : `bc-${randomUUID()}`;
     const body = {
-      ...options,
       ...(agentId ? { agentId } : {}),
       // No system-prompt field in the REST API: the instructions lead the first prompt.
       prompt: { text: d.instructions ? `${d.instructions}\n\n${prompt}` : prompt },
-      ...(d.model && d.model !== "default" ? { model: { id: d.model } } : {}),
       ...(repos.length ? { repos } : {}),
       ...(d.mcpServers.length ? { mcpServers: mcpServers(d) } : {}),
       ...(d.providerOptions.environment ? { env: d.providerOptions.environment } : {}),
+      // providerOptions win, like every other provider; `model.params` merges onto the id.
+      ...options,
+      ...(d.model && d.model !== "default"
+        ? { model: { id: d.model, ...(record(options.model) ?? {}) } }
+        : {}),
     };
     for (let attempt = 0; ; attempt += 1) {
       try {

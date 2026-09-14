@@ -21,6 +21,8 @@ export interface FakeGoogleOptions {
   budgetExceeded?: boolean;
   /** Name of a function (client) tool the agent calls in the first interaction of a chain. */
   functionTool?: string;
+  /** Stream the function call's arguments as this many `arguments_delta` chunks instead of on step.start. Default 1 (on step.start). */
+  argumentChunks?: number;
 }
 
 export interface FakeInteraction {
@@ -118,15 +120,26 @@ export function createFakeGoogle(options: FakeGoogleOptions = {}) {
     else await modelStep(`(fake gemini agent) chain ${chainDepth} starting`, usageJson(1));
     if (options.functionTool && chainDepth === 1 && !functionResults.length) {
       const i = index++;
+      const chunks = options.argumentChunks ?? 1;
       await emit("step.start", {
         index: i,
         step: {
           type: "function_call",
           id: `call_${interaction.id}`,
           name: options.functionTool,
-          arguments: { query: "fake" },
+          ...(chunks > 1 ? {} : { arguments: { query: "fake" } }),
         },
       });
+      if (chunks > 1) {
+        // docs/streaming.md: arguments arrive as `arguments_delta` chunks to be accumulated.
+        const json = JSON.stringify({ query: "fake" });
+        const size = Math.ceil(json.length / chunks);
+        for (let at = 0; at < json.length; at += size)
+          await emit("step.delta", {
+            index: i,
+            delta: { type: "arguments_delta", arguments: json.slice(at, at + size) },
+          });
+      }
       await emit("step.stop", { index: i, usage: usageJson(1) });
       interaction.usage = usageJson(1);
       await status("requires_action");

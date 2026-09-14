@@ -115,13 +115,13 @@ call `agent.attach(state.ref, state)` from the new process.
 | `tools` | Tools the application executes; arrive as `tool.request` | custom tools | function tools | function tools | unsupported (MCP only) |
 | `mcpServers` | Remote MCP servers the agent may call | `mcp_servers` + toolset; bearer tokens in a vault | `mcp` tool with http transport, bearer and headers | `mcp_server` tool with headers | inline `mcpServers` (http) with headers; bearer becomes `Authorization` |
 | `environment.files` | Text files placed in the sandbox | Files API upload + session resource, mounted under `/mnt/session/uploads/` | inline files (base64) at the given path | inline sources at the given path | unsupported |
-| `environment.repositories` | Repositories cloned in | `github_repository` resource with token and branch | `git clone` setup command (emulated) | repository source, no token | `repos[]` with `startingRef`; access through Cursor's GitHub App, no token |
+| `environment.repositories` | Repositories cloned in | `github_repository` resource with token and branch | `git clone` setup command (emulated) | repository source; a token becomes a Basic-auth network transform for the repo host | `repos[]` with `startingRef`; access through Cursor's GitHub App, no token |
 | `environment.network` | `"unrestricted"`, `"none"`, or `{ allowedHosts }` | environment networking | environment network | allowlist / disabled | unsupported |
 | `environment.packages` | `npm`, `pip`, `apt` | environment packages | environment packages | unsupported | unsupported |
 | `environment.setupCommands` | Shell commands before the agent starts | unsupported | setup commands | unsupported | unsupported |
 | `permissions` | `"allow"`, `"ask"`, `"auto"` for built-in tools | toolset permission policy | unsupported | unsupported | unsupported |
 | `rates` | Price overrides by model id | any | any | any | any (no built-in table) |
-| `providerOptions` | Raw params merged into `agent`, `session`, `environment` creates | yes | yes | yes | `agent` and `session` merge into the create body; `environment` becomes `env` |
+| `providerOptions` | Raw params merged into `agent`, `session`, `environment` creates | yes | yes | yes | `agent` and `session` merge into the create body (`model.params` merges onto the model id); `environment` becomes `env` |
 | `store` | Where the provider-side agent id is cached | `MemoryStore` (default), `FileStore`, your own | | | no provider-side object; the store is unused |
 
 `capabilities(provider)` returns the same information as data (`native`, `emulated`,
@@ -189,8 +189,8 @@ on a number or a lifecycle.
   again. Anthropic rejects a new `send()` while requests are pending.
 - An upstream item whose events you only partly consumed is redelivered in full on `attach()`;
   every event carries `upstreamId`, so dedupe on it if you need exactly-once.
-- Gemini function-call arguments are taken from a single streamed chunk; multi-chunk argument
-  streams are not buffered yet.
+- Gemini function-call arguments may stream as several `arguments_delta` chunks; anyplex
+  buffers them per call and hands the application one complete input.
 
 **Sessions and agents**
 
@@ -227,8 +227,10 @@ on a number or a lifecycle.
 - The hosted environment occasionally fails to provision. The session then ends `failed`, the
   turn is no longer active, and a `respond()` to it is refused with 409 ("the hosted environment
   failed to provision" on inspection). Start a new session; nothing on your side caused it.
-- Function-call requests surface on the session object (`required_actions`) and as in-progress
-  items before the turn completes; anyplex reads both.
+- Function-call requests are taken from the session's `required_actions` only. The docs are
+  explicit that a `function_call` item in the history "alone does not establish that a result
+  is pending", so in-progress items are transcript only. Each wait carries its own event id,
+  so a session that asks the application several times is followed correctly.
 
 **Gemini specifics**
 
@@ -240,8 +242,16 @@ on a number or a lifecycle.
   environment; `ref.sessionId` moves forward, so persist `state()` after every pass. Chaining
   in the same instant the previous interaction settled can fail with "Precondition check
   failed"; anyplex waits for the previous interaction to be final and retries briefly.
-- Artifacts can be listed but not downloaded through the public API; repository tokens and
-  packages have no mapping.
+- Artifacts can be listed but not downloaded through the SDK; the REST API can download the
+  whole environment as a tar (`files/environment-<id>:download`), which anyplex does not wrap.
+  Packages have no mapping. A repository token is injected as Basic auth for the repository's
+  host through the network allowlist, the documented way to reach private repositories.
+- Passing any `tools` or `mcpServers` replaces the agent's default tools, so anyplex restates
+  `code_execution`, `google_search`, and `url_context` ahead of yours; the agent keeps its
+  sandbox.
+- An interaction that ends `incomplete` (hit `max_tokens`, or a token budget set through
+  `providerOptions`) is reported as `failed` with `code: "incomplete"`; the documented
+  `budget_exceeded` status is mapped when it appears.
 
 **Cursor specifics**
 
@@ -285,6 +295,8 @@ on a number or a lifecycle.
   cancels, and since spend is known only after the run ends, it fires after the run finished.
 - No-repo agents (no `repositories`) must be enabled for the account; repository-scoped keys
   cannot create them.
+- The OpenAPI schema lists agent statuses `ACTIVE` and `ARCHIVED` only; the endpoint guide and
+  the live API also return `IDLE` between runs. anyplex follows the live API.
 
 **Anthropic specifics**
 
@@ -294,6 +306,10 @@ on a number or a lifecycle.
   `start()`.
 - MCP headers other than a bearer token have no mapping; bearer tokens are stored in a vault
   created with the agent.
+- `session.error` carries a `retry_status`: `retrying` means the server is retrying on its
+  own and anyplex keeps following; `exhausted` (the turn is dead, the session is idle again)
+  and `terminal` end the pass with `failed` and the error's `type` as `code`. MCP tool results
+  are named by `mcp_tool_use_id`, not `tool_use_id`; both are correlated to `tool.call`.
 
 ## What has been verified, and how far
 

@@ -367,7 +367,8 @@ export function createFakeCursor(options: FakeCursorOptions = {}) {
       if (index < 0) return error(c, 400, "invalid_last_event_id", "Unknown event id");
       from = index + 1;
     }
-    c.header("X-Cursor-Stream-Retention-Seconds", "3600");
+    // 86400 observed live on 2026-09-14.
+    c.header("X-Cursor-Stream-Retention-Seconds", "86400");
     return streamSSE(c, async (s) => {
       const closed = new AbortController();
       s.onAbort(() => closed.abort());

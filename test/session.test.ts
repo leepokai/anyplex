@@ -374,6 +374,48 @@ for (const vendor of VENDORS) {
     );
 
     it.skipIf(vendor.provider !== "openai")(
+      "answers a client tool in two consecutive turns of one session",
+      async () => {
+        const { client } = await agent(
+          { functionTool: "lookup" },
+          { tools: [{ name: "lookup", description: "d", parameters: { type: "object" } }] },
+        );
+        const session = await client.start({ prompt: "one", budgetUsd: 5 });
+        for (const turn of ["one", "two"]) {
+          if (turn === "two") await session.send("two");
+          const pass = await collect(session.events());
+          expect(ended(pass).outcome.kind, `turn ${turn}`).toBe("requires_action");
+          expect(session.pending).toHaveLength(1);
+          await session.respond(session.pending[0]?.id as string, { output: turn });
+          expect(ended(await collect(session.events())).outcome).toEqual({ kind: "completed" });
+        }
+      },
+    );
+
+    it.skipIf(vendor.provider !== "anthropic")(
+      "keeps following through a retrying session.error and correlates MCP tool results",
+      async () => {
+        const { client } = await agent({ retryingError: true, mcpTool: "docs_search" });
+        const session = await client.start({ prompt: "go", budgetUsd: 5 });
+        const events = await collect(session.events());
+        expect(ended(events).outcome).toEqual({ kind: "completed" });
+        expect(
+          events.some((e) => e.type === "harness.event" && e.payload.retry_status === "retrying"),
+        ).toBe(true);
+        const results = events.filter((e) => e.type === "tool.result");
+        expect(results.length).toBeGreaterThanOrEqual(2);
+        for (const r of results) expect((r.payload as { id: unknown }).id).toBeTruthy();
+        const calls = new Set(
+          events
+            .filter((e) => e.type === "tool.call")
+            .map((e) => String((e.payload as { id: unknown }).id)),
+        );
+        for (const r of results)
+          expect(calls.has(String((r.payload as { id: unknown }).id))).toBe(true);
+      },
+    );
+
+    it.skipIf(vendor.provider !== "openai")(
       "waits for late usage and refuses no deletes",
       async () => {
         const { fake, client } = await agent({ usageDelayMs: 2500, eventDelayMs: 100 });
@@ -414,6 +456,58 @@ for (const vendor of VENDORS) {
         const { client: failing } = await agent({ failRuns: true });
         const broken = await failing.start({ prompt: "go", budgetUsd: 5 });
         expect(ended(await collect(broken.events())).outcome.kind).toBe("failed");
+      },
+    );
+
+    it.skipIf(vendor.provider !== "google")(
+      "accumulates streamed function arguments, keeps the built-in tools, and injects repo auth",
+      async () => {
+        const { fake, client } = await agent(
+          { functionTool: "lookup", argumentChunks: 3 },
+          {
+            tools: [{ name: "lookup", description: "d", parameters: { type: "object" } }],
+            environment: {
+              repositories: [{ url: "https://github.com/example/private", token: "ghp_secret" }],
+            },
+          },
+        );
+        const session = await client.start({ prompt: "go", budgetUsd: 5 });
+        const first = await collect(session.events());
+        expect(ended(first).outcome.kind).toBe("requires_action");
+        expect(session.pending[0]?.input).toEqual({ query: "fake" });
+        expect(first.filter((e) => e.type === "tool.request")).toHaveLength(1);
+        const json = JSON.stringify((fake.state as GoogleState).agents);
+        for (const builtin of ["code_execution", "google_search", "url_context"])
+          expect(json).toContain(`"type":"${builtin}"`);
+        expect(json).toContain(
+          `Basic ${Buffer.from("x-oauth-basic:ghp_secret").toString("base64")}`,
+        );
+        expect(json).not.toContain("ghp_secret");
+        await session.respond(session.pending[0]?.id as string, { output: "ok" });
+        expect(ended(await collect(session.events())).outcome).toEqual({ kind: "completed" });
+      },
+    );
+
+    it.skipIf(vendor.provider !== "cursor")(
+      "lets providerOptions add fields and model params without losing the model id",
+      async () => {
+        const { fake, client } = await agent(
+          {},
+          {
+            providerOptions: {
+              agent: { model: { params: [{ id: "fast", value: "true" }] }, autoCreatePR: true },
+            },
+          },
+        );
+        const session = await client.start({ prompt: "go", budgetUsd: 5 });
+        await collect(session.events());
+        const request = JSON.stringify(
+          (fake.state as CursorState).agents.get(session.ref.sessionId)?.request,
+        );
+        expect(request).toContain(
+          '"model":{"id":"composer-2.5","params":[{"id":"fast","value":"true"}]}',
+        );
+        expect(request).toContain('"autoCreatePR":true');
       },
     );
 
@@ -544,9 +638,9 @@ describe("capabilities", () => {
         apiKey: "x",
         model: "m",
         instructions: "x",
-        environment: { repositories: [{ url: "https://github.com/a/b", token: "secret" }] },
+        environment: { packages: { npm: ["left-pad"] } },
       }),
-    ).toThrow(/repositories.token/);
+    ).toThrow(/environment.packages/);
     expect(() =>
       anyplex({
         provider: "anthropic",

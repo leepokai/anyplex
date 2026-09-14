@@ -18,7 +18,7 @@ export interface FakeOpenAIOptions {
   cachedTokens?: number;
   /** Command executions per turn. Default 1. */
   toolCalls?: number;
-  /** Name of a function (client) tool the agent calls once in its first turn. */
+  /** Name of a function (client) tool the agent calls once per turn. */
   functionTool?: string;
   /** How long after a turn completes before usage appears on the turn (half) and session (full). Default 0. */
   usageDelayMs?: number;
@@ -173,7 +173,7 @@ export function createFakeOpenAI(options: FakeOpenAIOptions = {}) {
       content: [{ type: "output_text", text }],
     });
     await item(message(`(fake openai agent) turn ${turnNo} starting`, "commentary"));
-    if (options.functionTool && turnNo === 1) {
+    if (options.functionTool) {
       const callId = fakeId("call");
       session.pendingTool = { callId, turnId: turn.id as string, output: null };
       await item({

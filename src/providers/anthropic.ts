@@ -132,11 +132,12 @@ export function translateAnthropic(raw: unknown): Translation {
     }
     case "agent.tool_result":
     case "agent.mcp_tool_result":
+      // The MCP result names its call `mcp_tool_use_id` (api/beta/sessions/events/list.md).
       return done([
         {
           type: "tool.result",
           payload: {
-            id: ev.tool_use_id,
+            id: ev.tool_use_id ?? ev.mcp_tool_use_id,
             is_error: ev.is_error === true,
             content: preview(ev.content),
           },
@@ -185,10 +186,19 @@ export function translateAnthropic(raw: unknown): Translation {
         outcome: { kind: "terminated" },
       });
     case "session.error": {
+      // `retry_status` says what the client should do (managed-agents/events-and-streaming.md):
+      // `retrying` means the server is retrying and the client waits; `exhausted` means the
+      // turn is dead and the session is idle again; `terminal` means the session terminates.
       const error = record(ev.error);
       const message = str(error?.message) ?? str(ev.message) ?? "managed agent session error";
-      return done([{ type: "harness.event", payload: { type, error: message } }], {
-        outcome: { kind: "failed", error: message },
+      const code = str(error?.type);
+      const retry = str(record(error?.retry_status)?.type);
+      const events: RawEvent[] = [
+        { type: "harness.event", payload: { type, error: message, code, retry_status: retry } },
+      ];
+      if (retry === "retrying") return done(events);
+      return done(events, {
+        outcome: { kind: "failed", error: message, ...(code ? { code } : {}) },
       });
     }
     default:

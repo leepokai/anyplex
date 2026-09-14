@@ -19,6 +19,12 @@ relies on is written down in `docs/gateway-readiness.md`.
   record of vendor behaviour; update them in the same change that changes behaviour.
 - `docs/gateway-readiness.md` for the compatibility rules (additive only, JSON everywhere,
   `AnyplexError`) and the planned additive fields. Do not add a field that breaks them.
+- `docs/vendor-docs.md` for the local mirror of the four vendors' documentation. Before changing
+  a provider mapping, run `pnpm docs:vendor` and read the relevant pages under
+  `vendor-docs/<provider>/` (start at its `INDEX.md`, or `pnpm docs:search "<terms>"`); cite the
+  page in the provider's header comment. Do not rely on memory of a vendor API.
+- `docs/vendor-gaps.md` for what the vendors document that anyplex does not map yet, from an
+  end-to-end read of the mirror on 2026-09-14. Check it before adding a definition field.
 
 ## Rules
 
