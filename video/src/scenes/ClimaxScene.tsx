@@ -47,7 +47,7 @@ export const ClimaxScene: React.FC = () => {
               <div style={{ marginLeft: 14, fontFamily: FONT.code, fontSize: 19, color: COLOR.muted }}>anyplex · examples/switch.ts</div>
             </div>
             <div style={{ position: "absolute", left: 0, top: 52, width: FRAME.w, height: FRAME.h - 52, overflow: "hidden" }}>
-              <Video src={staticFile("terminal.mp4")} trimBefore={Math.round(TRIM_SEC * fps)} style={{ width: 888, height: 630, transform: "scale(1.62)", transformOrigin: "0 0" }} />
+              <Video src={staticFile("terminal.mp4")} trimBefore={Math.round(TRIM_SEC * fps)} style={{ width: 1580, height: 1120, transform: "scale(0.86)", transformOrigin: "0 0" }} />
             </div>
             <div style={{ position: "absolute", left: 0, right: 0, top: 52, height: 2, background: `linear-gradient(90deg, transparent, ${COLOR.accent}, transparent)` }} />
             <LightSweep progress={sweep} strength={0.3} />

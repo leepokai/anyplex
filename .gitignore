@@ -18,3 +18,5 @@ docs/.vitepress/dist/
 
 # Remotion launch video renders (pnpm --dir video run render)
 video/out/
+# Regenerate with `python3 video/scripts/music.py`; the AAC copy is committed.
+video/public/music.wav

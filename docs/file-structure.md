@@ -29,7 +29,7 @@ anyplex/
 │   ├── live.test.ts            Opt-in smoke against the real vendors (ANYPLEX_LIVE)
 │   └── live-scenarios.test.ts  Opt-in lifecycle scenarios against the real vendors
 ├── examples/                   Runnable scripts (pnpm example examples/<name>.ts)
-├── assets/                     Project mark (icon.svg, icon-dark.svg, PNGs) and the launch recording (demo.sh, launch.cast/gif/mp4)
+├── assets/                     Marks (icon.svg, icon-dark.svg, icon-rounded.svg, PNGs), terminal recording (demo.sh, launch.cast), launch GIF/poster
 ├── video/                      Remotion launch video (own package): storyboard.json, src/scenes, npx remotion render
 ├── scripts/
 │   ├── vendor-docs.mjs         Mirrors the vendors' managed-agent docs into vendor-docs/ (pnpm docs:vendor)

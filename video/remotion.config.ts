@@ -2,5 +2,6 @@
 import { Config } from "@remotion/cli/config";
 
 Config.setRspack(true);
-Config.setVideoImageFormat("jpeg");
+// PNG frames: text stays crisp; JPEG capture softened the whole picture.
+Config.setVideoImageFormat("png");
 Config.setOverwriteOutput(true);

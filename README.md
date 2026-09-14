@@ -1,4 +1,4 @@
-<img src="assets/icon.svg" width="96" alt="anyplex: four strands converging into one hub and leaving as one line">
+<img src="assets/icon-rounded.svg" width="96" alt="anyplex: four strands converging into one hub and leaving as one line">
 
 # anyplex
 
@@ -11,7 +11,9 @@ LiteLLM for managed agents: one session interface for hosted agent runtimes.
 | `google` | Gemini Managed Agents (Interactions API, `antigravity-preview-05-2026`) | preview, verified live with `gemini-3.8-flash` |
 | `cursor` | Cursor Cloud Agents API v1 (`api.cursor.com`) | public beta, verified live with `claude-haiku-4-5` (Pro plan required) |
 
-![The same script run on Anthropic and then on Gemini by changing one route string](assets/launch.gif)
+[![anyplex launch video](assets/anyplex-launch.gif)](https://github.com/leepokai/anyplex/releases/download/v0.3.0/anyplex-launch.mp4)
+
+[Watch the launch video in full quality (MP4, 40 s)](https://github.com/leepokai/anyplex/releases/download/v0.3.0/anyplex-launch.mp4)
 
 The four runtimes converged on the same shape: a persisted agent, a hosted session with its own
 sandbox, and an event stream. anyplex drives all of them through one loop and gives an
@@ -153,8 +155,8 @@ Every rejection from a session method is an `AnyplexError` (`provider`, `status`
 
 ## Examples
 
-Runnable scripts in [`examples/`](examples): `switch.ts` (the recording above: one script, a
-`provider/model` route per vendor), `basic.ts` (stream one session on any provider),
+Runnable scripts in [`examples/`](examples): `switch.ts` (the terminal run inside the video:
+one script, a `provider/model` route per vendor), `basic.ts` (stream one session on any provider),
 `tools-and-turns.ts` (client tool, second turn, artifacts), `resume.ts` (save the state, attach
 from a second run), `budget-and-stop.ts` (cap and `stop()`), `with-fakes.ts` (no key at all).
 Run one with `pnpm example examples/basic.ts`.

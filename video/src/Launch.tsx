@@ -1,9 +1,10 @@
 // The launch video: one Sequence per storyboard scene, plus the brand anchor that persists
 // through the showcase scenes. Timing lives in constants.ts (TIMELINE).
+import { Audio } from "@remotion/media";
 import type React from "react";
-import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, interpolate, Sequence, staticFile, useVideoConfig } from "remotion";
 import { BrandAnchor } from "./components/Glass";
-import { COLOR, TIMELINE } from "./constants";
+import { COLOR, DURATION_SEC, TIMELINE } from "./constants";
 import { CapabilitiesScene } from "./scenes/CapabilitiesScene";
 import { ClimaxScene } from "./scenes/ClimaxScene";
 import { CloseScene } from "./scenes/CloseScene";
@@ -38,6 +39,20 @@ export const Launch: React.FC = () => {
       <Sequence name="brand-anchor" from={Math.round(TIMELINE.code.start * fps)} durationInFrames={Math.round((TIMELINE.close.start - TIMELINE.code.start) * fps)}>
         <BrandAnchor delay={0.25} />
       </Sequence>
+      {/* Music bed synthesized by scripts/music.py: fades in over a second, sits under the
+          climax's terminal, and fades out over the close. */}
+      <Audio
+        name="music"
+        src={staticFile("music.m4a")}
+        volume={(f) =>
+          interpolate(
+            f,
+            [0, 1 * fps, TIMELINE.climax.start * fps, (TIMELINE.climax.start + 0.5) * fps, TIMELINE.close.start * fps, DURATION_SEC * fps],
+            [0, 0.85, 0.85, 0.7, 0.8, 0],
+            { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+          )
+        }
+      />
     </AbsoluteFill>
   );
 };
