@@ -51,7 +51,8 @@
     "docs:search": "node scripts/docs-search.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "video:render": "cd video && npx remotion render Launch out/anyplex-launch.mp4 --codec h264 --crf 18"
   },
   "keywords": [
     "agents",

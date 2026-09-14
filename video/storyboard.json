@@ -1,0 +1,139 @@
+{
+  "meta": {
+    "title": "anyplex launch video (developer product, 40s spot)",
+    "durationSec": 40,
+    "fps": 30,
+    "width": 1920,
+    "height": 1080,
+    "narrativeStructure": "problem-solution",
+    "publishing": "X/Twitter feed (autoplay muted) and the GitHub README / landing page; 16:9, captions burned in, safe area 100px",
+    "fonts": {
+      "display": { "family": "Space Grotesk", "weights": ["500", "700"] },
+      "body": { "family": "Space Grotesk", "weights": ["400", "500"] },
+      "code": { "family": "JetBrains Mono", "weights": ["400", "500"] }
+    },
+    "colors": {
+      "background": "#070B14 - base; near-black navy, never pure black",
+      "surface": "#0F172A - glass cards and code windows (with 1px #1E293B border)",
+      "primary": "#F8FAFC - headlines and code text",
+      "muted": "#94A3B8 - captions, labels, secondary code",
+      "accent": "#3B82F6 - the hub, strands, highlights, CTA pill",
+      "highlight": "#93C5FD - light sweeps, active route string, expanding rings",
+      "vendorTints": { "anthropic": "#D97706", "openai": "#10B981", "google": "#F43F5E", "cursor": "#A855F7" }
+    },
+    "aesthetic": {
+      "name": "Midnight Router",
+      "mood": "A quiet, precise control room at night. Light travels along thin strands and converges into one bright hub. Confident, technical, unhurried.",
+      "motionCharacter": "Precise springs (damping 200, stiffness 300) for content; heavy premium glides (damping 200, stiffness 80) for the two reveals; momentum always travels left to right along the strands.",
+      "signatureElement": "The logo's four converging strands used as light streaks: they carry vendor cards into the hub in the reveal, underline the code in the showcase, and expand outward as a ring at the close."
+    }
+  },
+  "voice": { "enabled": false },
+  "scenes": [
+    {
+      "id": "hook",
+      "act": "hook",
+      "startSec": 0,
+      "durationSec": 4.5,
+      "purpose": "Show the pain: four hosted agent runtimes, four different APIs. The product artifact (real vendor code) is on screen within a second.",
+      "emotionalBeat": "Recognition, mild fatigue: 'yes, I have seen these four shapes'.",
+      "voiceover": null,
+      "layout": "Four glass code cards in a loose 2x2 offset grid (upper-left at x 180 y 200, upper-right at x 1040 y 150, lower-left at x 260 y 600, lower-right at x 1100 y 560), each 700x190. Headline on the vertical center line, appears after the cards, at y 500 spanning the middle: two lines.",
+      "elements": "Cards: vendor label (mono, muted, 22px) + one real API call in mono 26px: Anthropic `client.beta.sessions.create({ agent, events })`, OpenAI `client.beta.agents.sessions.create({ environment })`, Gemini `client.interactions.create({ agent, environment: \"remote\" })`, Cursor `POST /v1/agents { prompt, repos }`. Each card has a 2px left border in its vendor tint and a faint tint glow. Headline: 'Four hosted agent runtimes.' (display 700, 84px, primary) then 'Four APIs.' (display 500, 84px, muted).",
+      "animation": "Cards cascade with 130ms stagger in reading order: translate from 60px outside their own quadrant edge to 0, opacity 0→1, blur 10→0, rotateY 8°→0 with perspective 1200px, spring damping 200 stiffness 300 over 0.55s. Headline line 1 slams at 1.4s: scale 0.92→1 spring damping 15 stiffness 300, blur 6→0, opacity; line 2 glides in from 24px below at 1.9s. From 3.9s the cards drift 40px toward screen center with blur 0→8 and opacity 1→0 (the pull that motivates the reveal).",
+      "camera": "Static, with a 1.5% slow push-in over the scene.",
+      "lighting": "Cool blue radial glow at lower center (30% opacity) pulsing ±5% over 3s; each card carries a 40% vendor-tint glow behind it; dot grid at 6% opacity.",
+      "transitionOut": "Compound: cards converge toward center and blur while the whole scene scales 1→0.96 and fades over 0.5s, handing momentum to the reveal's inward strands."
+    },
+    {
+      "id": "reveal",
+      "act": "reveal",
+      "startSec": 4.3,
+      "durationSec": 5.7,
+      "purpose": "Hero moment: the four strands draw inward, meet at the hub, and one line leaves. The mark becomes the wordmark.",
+      "emotionalBeat": "Relief and focus: it all comes together.",
+      "voiceover": null,
+      "layout": "Mark centered at x 960 y 440 at 3.2x the icon (strands span 700px wide). Wordmark 'anyplex' centered at y 700 (display 700, 128px, -0.02em tracking). Tagline 'LiteLLM for managed agents' at y 800 (body 500, 40px, muted).",
+      "elements": "Four strands (stroke 24px at icon scale, #F8FAFC), hub circle r 44 (#3B82F6) with expanding ring (#93C5FD), out line (#3B82F6). Wordmark and tagline. Four tiny vendor labels riding the strands as they draw (each label fades out on reaching the hub).",
+      "animation": "0–1.4s: each strand draws with stroke-dashoffset 1→0 (0.9s, heavy glide, 120ms stagger from top), a vendor label travels along each strand and dissolves at the hub. 1.4s: hub pops scale 0→1 spring damping 12 stiffness 200 mass 0.6; a ring expands r 44→320 with opacity 0.8→0 over 0.9s. 1.7s: out line grows to the right over 0.6s heavy glide. 2.2s: wordmark slams (scale 0.9→1, blur 8→0, tracking -0.08em→-0.02em). 2.8s: tagline glides from 20px below. Glow behind the hub crescendos from 20% to 70% between 1.2s and 2.0s.",
+      "camera": "Slow 3% zoom-out from 1.03 to 1.0 across the scene so the mark settles.",
+      "lighting": "Blue glow concentrated at the hub; a light sweep crosses the wordmark 0.4s after it lands.",
+      "transitionOut": "Mark and wordmark scale to 0.6 and glide up-left to the corner position they keep for the rest of the video (match cut: the mark persists as a small brand anchor), while the scene background stays."
+    },
+    {
+      "id": "showcase-code",
+      "act": "showcase",
+      "startSec": 10,
+      "durationSec": 7.5,
+      "purpose": "Feature 1: one definition, one call, and only a route string changes per vendor.",
+      "emotionalBeat": "Ease: this is all the code there is.",
+      "voiceover": null,
+      "layout": "Code window (glass, 1120x520) anchored left at x 140 y 260. Route pills column on the right at x 1380: four pills stacked 88px apart starting y 330. Caption at bottom-left x 140 y 860: 'Change a route string, not your code.' (display 700, 54px).",
+      "elements": "Code (JetBrains Mono 30px): `const agent = anyplex({` / `  model: \"anthropic/claude-haiku-4-5\",` / `  apiKey, instructions,` / `});` / `const session = await agent.start({ prompt, budgetUsd: 0.5 });` / `for await (const event of session.events()) render(event);`. Route pills: anthropic/claude-haiku-4-5, openai/gpt-6-astra, google/gemini-3.8-flash, cursor/claude-haiku-4-5 in mono 26px with vendor-tint dot.",
+      "animation": "Window enters from the left: translateX -80→0, opacity, blur 8→0, precise spring 0.5s. Code typewrites at 45 chars/s from 0.4s to 3.2s with a blinking caret. Pills cascade from the right with 110ms stagger at 1.0s (translateX 40→0, opacity, blur). From 3.4s the route string in the code swaps every 0.8s to the next pill's value: the old string blurs out upward 12px while the new one drops in from -12px; the matching pill lights up (background #3B82F6 at 25%, a strand-line light streak connects pill to code line for 0.3s). Caption slams at 3.6s (scale 0.94→1, blur 6→0).",
+      "camera": "Static.",
+      "lighting": "Light streak from active pill to code line; window has a soft blue rim light on the left edge; ambient particles drift upward at 3% opacity.",
+      "transitionOut": "Window slides down and out (translateY 0→60, opacity 1→0, blur 0→6) over 0.4s, momentum feeding the next scene's list rising from below."
+    },
+    {
+      "id": "showcase-events",
+      "act": "showcase",
+      "startSec": 17.2,
+      "durationSec": 7,
+      "purpose": "Feature 2: one event stream and spend that is the vendor's real figure, with a budget that stops the run.",
+      "emotionalBeat": "Control: I can see everything and it cannot overspend.",
+      "voiceover": null,
+      "layout": "Event ledger (glass, 980x560) left at x 140 y 240: rows rise into it. Spend meter (glass, 560x300) right at x 1220 y 300: big number, thin bar, 'budget $0.50' label. Caption bottom-left x 140 y 860: 'One event stream. Spend that's actually right.'",
+      "elements": "Rows (mono 28px, type in muted, payload in primary): `tool.call      bash  date && uname -s` / `tool.result    ok` / `message.delta  Done.` / `spend.updated  $0.0063 settled` / `session.ended  completed`. Meter: number counts 0.0000→0.0063 in display 700 96px; bar fills 0→1.3% of the 0.50 budget (drawn as a thin track with a bright cap); label 'budget $0.50 · watchdog armed' in muted.",
+      "animation": "Ledger enters rising from 80px below with blur 8→0 over 0.5s (momentum from the previous exit). Rows use a staggered cascade from the bottom of the ledger upward (each row translateY 24→0, opacity, blur 6→0, 180ms apart starting 0.5s). On the spend row (2.3s) the meter pops in from the right with a precise spring and the number counts up over 0.8s while the bar's cap glows. `session.ended` row lands at 3.3s and the ledger's border pulses once in accent. Caption slams at 3.8s.",
+      "camera": "Subtle 2% push-in.",
+      "lighting": "The meter's cap is the brightest point once it appears; ledger rows carry a faint left-to-right light sweep as they land.",
+      "transitionOut": "Both panels compress toward the center (scale 0.94) and blur out over 0.45s; the hub brand anchor stays."
+    },
+    {
+      "id": "showcase-capabilities",
+      "act": "showcase",
+      "startSec": 24,
+      "durationSec": 6.5,
+      "purpose": "Feature 3: the rest of what an application needs, verified live on all four runtimes.",
+      "emotionalBeat": "Confidence: the edges are handled.",
+      "voiceover": null,
+      "layout": "Orbital float around a 1.6x mark at center (x 960 y 470): five satellite labels on an ellipse 1100x520, drifting 6° over the scene. Caption at bottom center y 880: 'Verified live on Anthropic, OpenAI, Gemini and Cursor.'",
+      "elements": "Satellites (glass pills, display 500 32px): 'stop() reaches the vendor', 'attach() after a restart', 'budget watchdog', 'artifacts in, artifacts out', 'fakes for every vendor'. Center mark. Thin strand lines from each satellite to the hub at 25% opacity.",
+      "animation": "Radial burst: satellites emerge from the hub position outward to their ellipse positions with 120ms stagger (scale 0.4→1, opacity, blur 10→0, precise spring 0.6s) starting 0.3s; their strand lines draw after each lands. The whole ellipse drifts 6° clockwise over the scene (float). Hub pulses ±4% at 0.8Hz. Caption glides from 20px below at 2.6s; the four vendor names inside it light up in their tints one after another 150ms apart.",
+      "camera": "Static.",
+      "lighting": "Hub is the brightest point; each satellite has a soft rim light on the side facing the hub.",
+      "transitionOut": "Satellites are pulled back into the hub (scale to 0.4, opacity 0) over 0.4s; the hub grows and blurs into the climax window's rim light."
+    },
+    {
+      "id": "climax",
+      "act": "climax",
+      "startSec": 30.3,
+      "durationSec": 6,
+      "purpose": "Proof: the real terminal recording of the same script on two vendors.",
+      "emotionalBeat": "Trust: it actually runs.",
+      "voiceover": null,
+      "layout": "Terminal window frame (1480x1000 scaled to fit at 0.9, centered, slight 4° perspective tilt that settles to 0°) playing terminal.mp4 from 12.5s to 18.5s (the Anthropic run). Caption top-left x 140 y 120: 'Real runs. Real vendors. Real spend.'",
+      "elements": "Window chrome (three dots, title 'anyplex · switch.ts'), the video, a rim light in accent along the top edge, a light sweep across the glass at 0.6s.",
+      "animation": "Window arrives with a heavy premium glide: scale 1.08→1, rotateX 4°→0, opacity, blur 12→0 over 0.9s. Video plays inside (trimmed). Caption slams at 0.5s. A light sweep crosses left-to-right at 0.6s over 0.7s. At 5.2s the window scales to 0.94 and blurs out.",
+      "camera": "Slow drift right 1% across the scene (parallax between window and grid).",
+      "lighting": "Screen glow spills onto the background (blue, 35%); vignette darkens corners.",
+      "transitionOut": "Window blurs and shrinks; a ring expands from its center into the close scene (match cut with the close's expanding ring)."
+    },
+    {
+      "id": "close",
+      "act": "close",
+      "startSec": 36,
+      "durationSec": 4,
+      "purpose": "Brand, install command, link. Leave the viewer with the one line to type.",
+      "emotionalBeat": "Resolve.",
+      "voiceover": null,
+      "layout": "Mark (2.2x) centered at y 400, wordmark below at y 590, install pill at y 720 (mono 40px, glass pill with accent border), link line at y 810 (body 500 30px, muted), vendor line at y 880 (mono 24px, tints).",
+      "elements": "Mark, 'anyplex', pill `npm i anyplex`, 'github.com/leepokai/anyplex', 'anthropic · openai · google · cursor'.",
+      "animation": "Ring expands from center (r 0→900, opacity 0.5→0) over 1.1s as the mark scales in with a heavy glide (0.6→1, blur 10→0). Wordmark slams at 0.4s. Pill types the command at 40 chars/s from 0.9s with the caret blinking, then the pill's border glows. Link glides from below at 1.6s. Vendor line fades in with each name 120ms apart at 2.0s. Hold from 2.6s with only ambient motion (glow pulse, particles).",
+      "camera": "Static.",
+      "lighting": "Glow settles to a calm 40% behind the mark; grid at 5%; particles drifting.",
+      "transitionOut": "Hold on the final frame."
+    }
+  ]
+}

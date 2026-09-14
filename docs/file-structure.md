@@ -30,6 +30,7 @@ anyplex/
 │   └── live-scenarios.test.ts  Opt-in lifecycle scenarios against the real vendors
 ├── examples/                   Runnable scripts (pnpm example examples/<name>.ts)
 ├── assets/                     Project mark (icon.svg, icon-dark.svg, PNGs) and the launch recording (demo.sh, launch.cast/gif/mp4)
+├── video/                      Remotion launch video (own package): storyboard.json, src/scenes, npx remotion render
 ├── scripts/
 │   ├── vendor-docs.mjs         Mirrors the vendors' managed-agent docs into vendor-docs/ (pnpm docs:vendor)
 │   └── docs-search.mjs         MiniSearch over docs/ and the mirror from the shell (pnpm docs:search)

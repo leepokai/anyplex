@@ -15,3 +15,6 @@ vendor-docs/
 # VitePress site output and cache (pnpm docs:build / docs:dev)
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+
+# Remotion launch video renders (pnpm --dir video run render)
+video/out/
