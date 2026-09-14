@@ -1,11 +1,11 @@
 // Session runner against the fake upstreams: completion with spend, the budget watchdog, stop(),
 // and re-attaching after abandoning a stream without duplicating events or spend.
 import { afterAll, describe, expect, it } from "vitest";
+import { startFakeAnthropic } from "../src/fakes/anthropic.ts";
+import { startFakeGoogle } from "../src/fakes/google.ts";
+import { startFakeOpenAI } from "../src/fakes/openai.ts";
+import type { FakeServer } from "../src/fakes/timeline.ts";
 import { anyplex, type ProviderName, type SessionEvent } from "../src/index.ts";
-import { startFakeAnthropic } from "./fakes/anthropic.ts";
-import { startFakeGoogle } from "./fakes/google.ts";
-import { startFakeOpenAI } from "./fakes/openai.ts";
-import type { FakeServer } from "./fakes/timeline.ts";
 
 interface Vendor {
   provider: ProviderName;

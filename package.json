@@ -4,7 +4,16 @@
   "description": "One session interface for hosted agent runtimes: Anthropic Managed Agents, OpenAI Agents API, Gemini Managed Agents. Unified events, provider-reported spend, budget watchdog, stop, and lossless re-attach.",
   "license": "MIT",
   "author": "leepokai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leepokai/anyplex.git"
+  },
+  "homepage": "https://github.com/leepokai/anyplex#readme",
+  "bugs": {
+    "url": "https://github.com/leepokai/anyplex/issues"
+  },
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=22.13"
   },
@@ -12,13 +21,21 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./fakes": {
+      "types": "./dist/fakes/index.d.ts",
+      "import": "./dist/fakes/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
@@ -28,7 +45,8 @@
     "test": "vitest run",
     "prepublishOnly": "pnpm check && pnpm test && pnpm build",
     "e2e": "vitest run test/session.test.ts",
-    "e2e:live": "ANYPLEX_LIVE=${ANYPLEX_LIVE:-anthropic,openai,google} vitest run test/live.test.ts test/live-scenarios.test.ts"
+    "e2e:live": "ANYPLEX_LIVE=${ANYPLEX_LIVE:-anthropic,openai,google} vitest run test/live.test.ts test/live-scenarios.test.ts",
+    "example": "tsx"
   },
   "keywords": [
     "agents",
@@ -45,12 +63,25 @@
     "@google/genai": "^2.22.0",
     "openai": "^7.15.0"
   },
+  "peerDependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.3"
+  },
+  "peerDependenciesMeta": {
+    "@hono/node-server": {
+      "optional": true
+    },
+    "hono": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",
     "@hono/node-server": "^2.1.1",
     "@types/node": "^26.2.0",
     "hono": "^4.13.3",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "tsx": "^4.23.12"
   }
 }

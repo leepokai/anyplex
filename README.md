@@ -28,8 +28,9 @@ raw SDKs do not:
   upstream items. Works even where the provider has no replay (OpenAI) or no event ids (Gemini).
   An upstream item whose events you only partly consumed is redelivered in full; every event
   carries `upstreamId`, so dedupe on it if you need exactly-once.
-- **Fakes.** Test doubles for all three APIs, shaped from live traffic, so your own tests never
-  spend money.
+- **Fakes.** `anyplex/fakes` ships test doubles for all three APIs, shaped from live traffic,
+  so your own tests never spend money. They model shapes and lifecycles, not yet the timing
+  quirks listed below.
 
 ## Install
 
@@ -88,6 +89,13 @@ Swap the provider by changing two strings. The agent object is created once per 
 cached in `store`: `MemoryStore` by default, `FileStore("path.json")` for anything that restarts,
 or your own `AgentStore`.
 
+## Examples
+
+Runnable scripts in [`examples/`](examples): `basic.ts` (stream one session on any provider),
+`resume.ts` (save the ref and state, attach from a second run), `budget-and-stop.ts` (cap and
+`stop()`), `with-fakes.ts` (the whole thing with no key). Run one with
+`pnpm example examples/basic.ts`.
+
 ## Outcomes
 
 `session.ended` carries one of `completed`, `budget_exceeded`, `requires_action` (the hosted
@@ -107,6 +115,21 @@ still running upstream), or `failed`.
 pnpm test                       # translators + session runner against the fakes, no keys
 pnpm e2e:live                   # real vendors (ANYPLEX_LIVE=anthropic,openai,google), needs keys, costs money
 ```
+
+Use the same fakes in your own suite (they need `hono` and `@hono/node-server` installed):
+
+```ts
+import { startFakeOpenAI } from "anyplex/fakes";
+
+const fake = await startFakeOpenAI({ eventDelayMs: 10 });
+const agent = anyplex({ provider: "openai", apiKey: "fake", baseUrl: `${fake.url}/v1`, model: "gpt-5", instructions: "..." });
+// ... run your code against it ...
+await fake.close();
+```
+
+`startFakeAnthropic()` takes `baseUrl: fake.url`; `startFakeGoogle()` takes `baseUrl: fake.url`
+as well (the SDK adds `/v1beta`). Each fake exposes `state` so a test can assert what the
+"vendor" saw: sessions, interrupts, deletes, cancellations.
 
 ## Scope
 

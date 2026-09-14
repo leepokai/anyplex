@@ -5,3 +5,6 @@ coverage/
 *.log
 .claude/
 .agents/
+
+examples/.resume.json
+examples/.agents.json
